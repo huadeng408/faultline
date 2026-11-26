@@ -1,0 +1,9 @@
+﻿node_modules/
+dist/
+dist-single/
+dist-extension/
+.env
+.env.*
+!.env.example
+*.tsbuildinfo
+*.log
