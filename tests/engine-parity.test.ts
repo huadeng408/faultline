@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -5,24 +6,38 @@ import {
   SCENARIOS,
   computeSimulation,
   createCustomScenario,
-  type ScenarioId,
+  stepExponentialQueueExact,
+  type BuiltinScenarioId,
 } from '../src/core/faultlineEngine.ts';
 
-const PYTHON_BIN = 'D:\\anaconda\\python.exe';
+function resolvePythonBin(): string {
+  if (process.env.PYTHON_BIN) return process.env.PYTHON_BIN;
+  if (process.platform === 'win32' && fs.existsSync('D:\\anaconda\\python.exe')) {
+    return 'D:\\anaconda\\python.exe';
+  }
+  return process.platform === 'win32' ? 'python' : 'python3';
+}
 
-function runPythonMargin(code: string): number {
+const PYTHON_BIN = resolvePythonBin();
+
+function runPythonParity(code: string): { margin: number; series: number[] } {
   const out = execFileSync(PYTHON_BIN, ['-c', code], {
     encoding: 'utf8',
     env: { ...process.env, PYTHONUTF8: '1' },
   });
   const m = out.match(/(?:margin_h|headroom|floor_delta|custom_margin)=([+-]?\d+(?:\.\d+)?)/);
   assert.ok(m, `Expected structured margin key in Python stdout, got: ${out}`);
-  return Number(m[1]);
+  const sMatch = out.match(/series_json=(\[[^\n]+\])/);
+  assert.ok(sMatch, `Expected series_json array in Python stdout, got: ${out}`);
+  return {
+    margin: Number(m[1]),
+    series: JSON.parse(sMatch[1]) as number[],
+  };
 }
 
-test('Seam S1.1: Built-in scenarios maintain mathematical parity (<0.15 units) between TS kernel and executed Python numpy script', () => {
+test('Seam S1.1: Built-in scenarios maintain <0.01 pointwise latent parity and margin parity between TS kernel and Python numpy script', () => {
   const cases: Array<{
-    id: ScenarioId;
+    id: BuiltinScenarioId;
     params: Record<string, number>;
     toggles: Record<string, boolean>;
   }> = [
@@ -33,7 +48,7 @@ test('Seam S1.1: Built-in scenarios maintain mathematical parity (<0.15 units) b
     },
     {
       id: 'typhoon-cpap',
-      params: { batteryWh: 1280, outageHours: 36, cpapWatts: 36, coolerWatts: 22, inverterTareW: 14 },
+      params: { batteryWh: 1920, outageHours: 36, cpapWatts: 36, coolerWatts: 22, inverterTareW: 14 },
       toggles: { disableHumidifier: true, dcDirectMode: true, preChillPacks: true },
     },
     {
@@ -59,48 +74,63 @@ test('Seam S1.1: Built-in scenarios maintain mathematical parity (<0.15 units) b
     for (const v of snap.cloudSeries) {
       assert.ok(v >= 0 && v <= 100, `Expected clamped display pct in [0,100], got ${v}`);
     }
-    const pyMargin = runPythonMargin(snap.pythonCode);
-    const diff = Math.abs(snap.cloudMargin - pyMargin);
+    const py = runPythonParity(snap.pythonCode);
     assert.ok(
-      diff <= 0.15,
-      `[${tc.id}] TS cloudMargin=${snap.cloudMargin} diverged from executed Python=${pyMargin} (diff=${diff.toFixed(3)})`,
+      Math.abs(snap.cloudMargin - py.margin) <= 0.05,
+      `[${tc.id}] TS cloudMargin=${snap.cloudMargin} diverged from Python=${py.margin}`,
     );
+    assert.equal(py.series.length, snap.latentSeries.length);
+    for (let i = 0; i < snap.latentSeries.length; i++) {
+      const ptDiff = Math.abs(snap.latentSeries[i] - py.series[i]);
+      assert.ok(
+        ptDiff <= 0.01,
+        `[${tc.id} step ${i}] Pointwise latent mismatch: TS=${snap.latentSeries[i]} vs Py=${py.series[i]} (diff=${ptDiff})`,
+      );
+    }
   }
 });
 
-test('Seam S1.2: Transient exponential queue integrator has zero CFL oscillation at healthy 66.7% load and captures metastable retry lockup', () => {
+test('Seam S1.2: Exact exponential queue integrator has <1e-10 step-size invariance (dt=4s vs dt=0.01s), zero CFL oscillation, and metastable retry lockup', () => {
+  // 1) Exact exponential step invariance under constant rate between coarse dt=4.0s and fine dt=0.01s (400 substeps)
+  const qCoarse = stepExponentialQueueExact(120, 7400, 5200, 2.0, 4.0);
+  let qFine = 120;
+  for (let sub = 0; sub < 400; sub++) {
+    qFine = stepExponentialQueueExact(qFine, 7400, 5200, 2.0, 0.01);
+  }
+  const relErr = Math.abs(qCoarse - qFine) / Math.max(1, qFine);
+  assert.ok(relErr < 1e-10, `Expected exact exponential step invariance <1e-10, got relErr=${relErr}`);
+
+  // 2) Healthy 66.7% load has zero CFL oscillation
   const healthy = computeSimulation(
     'singles-day-cutover',
     { rps: 3600, timeoutMs: 2000, retries: 0, dbPoolMax: 480, crossRegionRttMs: 68 },
     { tokenBucketRetry: false, circuitBreaker: false, asyncOutbox: false },
   );
-  // Under healthy load with 0 retries, pool headroom must remain smoothly positive (> 25%) with no wild step-to-zero oscillation
-  const minHealthy = Math.min(...healthy.cloudSeries);
-  assert.ok(minHealthy >= 25, `Expected smooth healthy headroom >= 25%, got ${minHealthy}%`);
+  assert.ok(Math.min(...healthy.cloudSeries) >= 25);
 
-  // Under severe retry storm (rps=5600, retries=4), surge pushes queue into metastable backlog so minute 28 remains degraded compared to token-bucketed run
+  // 3) Retry storm pushes queue past 0.70 * T_out into metastable lockup vs token-bucketed run
   const storm = computeSimulation(
     'singles-day-cutover',
-    { rps: 5600, timeoutMs: 1800, retries: 4, dbPoolMax: 480, crossRegionRttMs: 84 },
+    { rps: 7200, timeoutMs: 1800, retries: 4, dbPoolMax: 480, crossRegionRttMs: 84 },
     { tokenBucketRetry: false, circuitBreaker: false, asyncOutbox: false },
   );
   const guarded = computeSimulation(
     'singles-day-cutover',
-    { rps: 5600, timeoutMs: 1800, retries: 4, dbPoolMax: 480, crossRegionRttMs: 84 },
+    { rps: 7200, timeoutMs: 1800, retries: 4, dbPoolMax: 480, crossRegionRttMs: 84 },
     { tokenBucketRetry: true, circuitBreaker: false, asyncOutbox: false },
   );
-  assert.ok(storm.cloudMargin < guarded.cloudMargin - 10, 'Retry storm must degrade pool margin by >10% vs token bucket');
+  assert.ok(storm.cloudMargin < guarded.cloudMargin - 20, 'Retry storm must degrade pool margin by >20% vs token bucket');
 });
 
-test('Seam S1.3: Open-domain custom scenarios support all 3 physical envelopes (peak_capacity, cumulative_stock with recharge, queue_backpressure)', () => {
-  // 1) 15A / 120V breaker (1440W NEC 80% safe continuous limit) with 6x 3D printers + filament dryer (peak_capacity)
+test('Seam S1.3: Open-domain custom scenarios maintain <0.01 pointwise parity across all 3 physical envelopes (peak_capacity, cumulative_stock, queue_backpressure)', () => {
+  // 1) peak_capacity: 15A breaker with 6x 3D printers
   const breakerSpec = createCustomScenario({
     title: '15A Breaker · 6x 3D Printer Farm',
     archetype: 'peak_capacity',
     marginUnit: '% rail',
     horizonLabel: '12h Print Batch',
     axisXUnit: 'h',
-    safetyFloorPct: 20, // 20% NEC continuous headroom floor on 1800W breaker = 1440W max continuous
+    safetyFloorPct: 20,
     capacityValue: 1800,
     capacityUnit: 'W',
     horizonValue: 12,
@@ -113,15 +143,16 @@ test('Seam S1.3: Open-domain custom scenarios support all 3 physical envelopes (
   const initP = Object.fromEntries(breakerSpec.params.map((p) => [p.key, p.value]));
   const initT = Object.fromEntries(breakerSpec.toggles.map((t) => [t.key, false]));
   const snapUnsafe = computeSimulation(breakerSpec.id, initP, initT, breakerSpec);
-  assert.equal(snapUnsafe.isSafe, false, 'Coincident 1690W warmup + dryer on 1800W (20% NEC floor) must breach');
-  const pyUnsafe = runPythonMargin(snapUnsafe.pythonCode);
-  assert.ok(Math.abs(snapUnsafe.cloudMargin - pyUnsafe) <= 0.2);
+  assert.equal(snapUnsafe.isSafe, false);
+  const pyBreak = runPythonParity(snapUnsafe.pythonCode);
+  for (let i = 0; i < 37; i++) {
+    assert.ok(Math.abs(snapUnsafe.latentSeries[i] - pyBreak.series[i]) <= 0.01);
+  }
 
   const initTSafe = Object.fromEntries(breakerSpec.toggles.map((t) => [t.key, true]));
-  const snapSafe = computeSimulation(breakerSpec.id, initP, initTSafe, breakerSpec);
-  assert.equal(snapSafe.isSafe, true, 'Staggering warmup must bring 15A breaker back within NEC 80% safe envelope');
+  assert.equal(computeSimulation(breakerSpec.id, initP, initTSafe, breakerSpec).isSafe, true);
 
-  // 2) Wedding catering cold-storage van with driving recharge & door-open thermal drain (cumulative_stock bidirectional)
+  // 2) cumulative_stock: bidirectional cold-van route
   const vanSpec = createCustomScenario({
     title: 'Wedding Catering Cold-Van Route',
     archetype: 'cumulative_stock',
@@ -140,6 +171,30 @@ test('Seam S1.3: Open-domain custom scenarios support all 3 physical envelopes (
   });
   const vanP = Object.fromEntries(vanSpec.params.map((p) => [p.key, p.value]));
   const vanSnap = computeSimulation(vanSpec.id, vanP, {}, vanSpec);
-  const pyVan = runPythonMargin(vanSnap.pythonCode);
-  assert.ok(Math.abs(vanSnap.cloudMargin - pyVan) <= 0.25);
+  const pyVan = runPythonParity(vanSnap.pythonCode);
+  for (let i = 0; i < 37; i++) {
+    assert.ok(Math.abs(vanSnap.latentSeries[i] - pyVan.series[i]) <= 0.01);
+  }
+
+  // 3) queue_backpressure: custom API gateway storm
+  const queueSpec = createCustomScenario({
+    title: 'AWS Order Concurrency Surge',
+    archetype: 'queue_backpressure',
+    marginUnit: 'pool %',
+    horizonLabel: '36m Surge Window',
+    axisXUnit: 'm',
+    safetyFloorPct: 15,
+    capacityValue: 380,
+    capacityUnit: 'slots',
+    horizonValue: 36,
+    loads: [
+      { id: 'ingress', label: 'Flash-Sale Ingress', value: 4600, unit: 'req/s', polarity: 'drain', window: { kind: 'always' }, mitigationLabel: 'Edge Shedding (-30%)', mitigationMult: 0.7 },
+    ],
+  });
+  const qP = Object.fromEntries(queueSpec.params.map((p) => [p.key, p.value]));
+  const qSnap = computeSimulation(queueSpec.id, qP, {}, queueSpec);
+  const pyQ = runPythonParity(qSnap.pythonCode);
+  for (let i = 0; i < 37; i++) {
+    assert.ok(Math.abs(qSnap.latentSeries[i] - pyQ.series[i]) <= 0.01);
+  }
 });

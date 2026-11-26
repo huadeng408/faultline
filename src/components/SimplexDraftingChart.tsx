@@ -104,14 +104,7 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
       .y1((v) => yS(v))
       .curve(curveMonotoneX);
 
-    const safetyPct =
-      scenario.id === 'singles-day-cutover'
-        ? 15
-        : scenario.id === 'expat-cashflow'
-          ? 18.75
-          : scenario.customEnvelope
-            ? scenario.customEnvelope.safetyFloorPct
-            : 10;
+    const safetyPct = scenario.safetyFloorPct;
 
     // Construct dense quarter-step (15-min / sub-interval) 2D CAD nodes for d3-delaunay Voronoi snapping
     const totalSubSteps = 72; // every 30 minutes on 36h window (73 timestamps x 2 curves = 146 Voronoi sites)
@@ -238,6 +231,7 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
     snapshot.cloudSeries,
     snapshot.isSafe,
     scenario.id,
+    scenario.safetyFloorPct,
     scenario.axisXUnit,
     scenario.customEnvelope,
     paramValues,

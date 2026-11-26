@@ -110,10 +110,18 @@ export default function App() {
     };
     raf = window.requestAnimationFrame(step);
 
-    // Hydrate ?pocket= survival QR link if present
+    // Hydrate ?pocket= survival QR link if present (supports both built-in and [+04] CUSTOM scenarios)
     if (typeof window !== 'undefined' && window.location.search.includes('pocket=')) {
       const pocket = decodePocketUrl(window.location.href);
-      if (pocket && pocket.scenarioId in SCENARIOS) {
+      if (pocket) {
+        if (pocket.hydratedCustomScenario) {
+          const customSc = pocket.hydratedCustomScenario;
+          setCustomScenario(customSc);
+          setSurrogateMap((prev) => ({
+            ...prev,
+            [customSc.id]: bootstrapLocalSurrogate(customSc, pocket.paramValues, pocket.toggleValues),
+          }));
+        }
         setScenarioId(pocket.scenarioId);
         setParamValues(pocket.paramValues);
         setToggleValues(pocket.toggleValues);
@@ -177,14 +185,45 @@ export default function App() {
     [scenario, paramValues, toggleValues],
   );
 
+  const activeSurrogatePacket = useMemo<CalibratedSurrogatePacket>(() => {
+    const existing = surrogateMap[scenario.id];
+    if (existing) return existing;
+    return bootstrapLocalSurrogate(scenario, paramValues, toggleValues);
+  }, [surrogateMap, scenario, paramValues, toggleValues]);
+
+  const surrogateEnvelope = useMemo(
+    () => evaluateCalibratedSurrogate(scenario, paramValues, toggleValues, activeSurrogatePacket),
+    [scenario, paramValues, toggleValues, activeSurrogatePacket],
+  );
+
   const snapshot = useMemo(() => {
-    const mergedConflicts =
-      extraConflict && !baseSnapshot.isSafe
-        ? [extraConflict, ...baseSnapshot.conflicts]
-        : baseSnapshot.conflicts;
+    // Enforce unified compliance: both nominal conservation AND Worst-10% (P10) storm margin >= M_safe
+    const isP10Compliant =
+      baseSnapshot.isSafe && surrogateEnvelope.p10Margin >= scenario.safeMarginTarget;
+    const stormConflict: ConflictArc[] =
+      baseSnapshot.isSafe && !isP10Compliant
+        ? [
+            {
+              id: 'conf-p10-tail',
+              fromClauseId: scenario.clauses[0]?.id ?? 'c1',
+              toClauseId: scenario.clauses[1]?.id ?? 'c2',
+              severity: 'warning',
+              summary: `Nominal curve passes, but Worst-10% (P10) storm trajectory (${surrogateEnvelope.p10Margin.toFixed(1)} ${scenario.marginUnit}) falls short of +${scenario.safeMarginTarget} ${scenario.marginUnit} covenant.`,
+              localLatencyMs: 0,
+              provenance: 'deterministic',
+            },
+          ]
+        : [];
+    const mergedConflicts = [
+      ...(extraConflict ? [extraConflict] : []),
+      ...stormConflict,
+      ...baseSnapshot.conflicts,
+    ];
+
     if (liveCodeOverride && liveCodeOverride.scenarioId === scenario.id) {
       return {
         ...baseSnapshot,
+        isSafe: isP10Compliant,
         conflicts: mergedConflicts,
         pythonCode: liveCodeOverride.code || baseSnapshot.pythonCode,
         pythonStdout: liveCodeOverride.stdout || baseSnapshot.pythonStdout,
@@ -196,20 +235,19 @@ export default function App() {
     }
     return {
       ...baseSnapshot,
+      isSafe: isP10Compliant,
       conflicts: mergedConflicts,
     };
-  }, [baseSnapshot, extraConflict, liveCodeOverride, scenario.id]);
-
-  const activeSurrogatePacket = useMemo<CalibratedSurrogatePacket>(() => {
-    const existing = surrogateMap[scenario.id];
-    if (existing) return existing;
-    return bootstrapLocalSurrogate(scenario, paramValues, toggleValues);
-  }, [surrogateMap, scenario, paramValues, toggleValues]);
-
-  const surrogateEnvelope = useMemo(
-    () => evaluateCalibratedSurrogate(scenario, paramValues, toggleValues, activeSurrogatePacket),
-    [scenario, paramValues, toggleValues, activeSurrogatePacket],
-  );
+  }, [
+    baseSnapshot,
+    surrogateEnvelope.p10Margin,
+    scenario.safeMarginTarget,
+    scenario.clauses,
+    scenario.marginUnit,
+    scenario.id,
+    extraConflict,
+    liveCodeOverride,
+  ]);
 
   const minimalRepairPlan = useMemo(
     () => solveMinimalRepair(scenario, paramValues, toggleValues, activeSurrogatePacket),
@@ -242,6 +280,21 @@ export default function App() {
       toast.success(
         `Gemini Nano 4 ready on-device (${sharedBridge.status.lastLatencyMs}ms${q > 0 ? ` · ${q} ctx window` : ''})`,
       );
+      // Run live compact semantic clause check on current scenario so Tangle badge shows measured ON_DEVICE latency
+      const clauseProse = `${scenario.title}: ${scenario.subtitle}`;
+      const cPair: [string, string] = [
+        scenario.clauses[0]?.id ?? 'c1',
+        scenario.clauses[1]?.id ?? 'c2',
+      ];
+      const liveConf = await sharedBridge.auditProseContradiction(
+        clauseProse,
+        scenario.defaultPrivacyLock,
+        cPair,
+      );
+      if (liveConf) {
+        setExtraConflict(liveConf);
+        setBridgeTick((v) => v + 1);
+      }
     } else {
       toast.message(
         'On-device Gemini Nano not active in this browser; deterministic & Buckingham-Π hybrid engine active.',
@@ -332,11 +385,13 @@ export default function App() {
           `[${cloudRes.inferenceSource.toUpperCase()} · ${(cloudRes.latencyMs / 1000).toFixed(2)}s] 2,000-MC Python calibrated (${cloudRes.modelUsed})!`,
         );
       } else {
-        // Re-anchor multi-fidelity surrogate locally around current parameters when no cloud key is present
-        const reanchored = bootstrapLocalSurrogate(scenario, paramValues, toggleValues);
-        setSurrogateMap((prev) => ({ ...prev, [scenario.id]: reanchored }));
-        toast.success(
-          `Re-anchored Buckingham-Π surrogate at current point (P10=${surrogateEnvelope.p10Margin >= 0 ? '+' : ''}${surrogateEnvelope.p10Margin.toFixed(1)} ${scenario.marginUnit})`,
+        // Never overwrite verified 2,000-trial SEED_SURROGATES when no cloud API key is configured
+        if (!surrogateMap[scenario.id]) {
+          const bootstrapped = bootstrapLocalSurrogate(scenario, paramValues, toggleValues);
+          setSurrogateMap((prev) => ({ ...prev, [scenario.id]: bootstrapped }));
+        }
+        toast.info(
+          'Cloud API key not set in .env.local — retaining verified 2,000-MC Buckingham-Π surrogate cache.',
         );
       }
     } catch (err: unknown) {
@@ -786,6 +841,7 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
         paramValues={paramValues}
         toggleValues={toggleValues}
         snapshot={snapshot}
+        surrogateEnvelope={surrogateEnvelope}
       />
       <HeronIphoneFaultPadDrawer
         open={iphoneOpen}

@@ -133,6 +133,8 @@ export interface ScenarioDefinition {
   horizonPoints: number;
   axisXUnit: string;
   axisYLabel: string;
+  safetyFloorPct: number;
+  safeMarginTarget: number;
   defaultPrivacyLock: boolean;
   rawPrivateSample: string;
   params: ScrubParam[];
@@ -167,14 +169,21 @@ export interface SimulationSnapshot {
   regions: RegionNode[];
 }
 
-export interface TraceSpan {
-  id: string;
-  stage: string;
-  lane: 'ON_DEVICE' | 'AIRLOCK_SHA256' | 'ONLY_IN_CLOUD' | 'CODE_EXEC';
-  startMs: number;
-  durationMs: number;
-  tokens: number;
-  detail: string;
+/**
+ * Unconditionally A-stable exact exponential integrator step for transient backlog Q(t + dt)
+ * with timeout reneging rate -Q / T_out,s. Exact for arbitrary step size dt > 0 under piecewise-constant arrival.
+ */
+export function stepExponentialQueueExact(
+  qNow: number,
+  effectiveArrivalRps: number,
+  serviceCapacityRps: number,
+  timeoutSec: number,
+  dtSec: number,
+): number {
+  const tout = Math.max(1e-6, timeoutSec);
+  const dec = Math.exp(-dtSec / tout);
+  const nextQ = qNow * dec + (effectiveArrivalRps - serviceCapacityRps) * tout * (1 - dec);
+  return Math.max(0, nextQ);
 }
 
 const CUSTOM_SCENARIO_REGISTRY = new Map<string, ScenarioDefinition>();
@@ -393,6 +402,8 @@ export function createCustomScenario(input: CreateCustomScenarioInput): Scenario
         : input.archetype === 'queue_backpressure'
           ? 'Available Concurrency Headroom (%)'
           : 'Remaining Usable Stock (%)'),
+    safetyFloorPct: input.safetyFloorPct,
+    safeMarginTarget: 0,
     defaultPrivacyLock: input.defaultPrivacyLock ?? true,
     rawPrivateSample:
       input.rawPrivateSample ??
@@ -422,14 +433,7 @@ export function createCustomScenario(input: CreateCustomScenarioInput): Scenario
         })),
       );
 
-      if (input.archetype === 'peak_capacity') {
-        const code = `import json, numpy as np
-
-cap = float(${cap})
-floor_pct = float(${input.safetyFloorPct})
-loads = json.loads('${loadsJson}')
-
-def weight(w, i):
+      const pyWeightHelper = `def weight(w, i):
     k = w['kind']
     if k == 'always': return 1.0
     if k == 'interval': return 1.0 if w['startStep'] <= i <= w['endStep'] else 0.0
@@ -437,7 +441,16 @@ def weight(w, i):
         ph = i % max(1, w['periodSteps'])
         return 1.0 if w['onStart'] <= ph <= w['onEnd'] else 0.0
     if i <= w['startStep']: return 0.0
-    return min(1.0, (i - w['startStep']) / max(1.0, w['fullStep'] - w['startStep']))
+    return min(1.0, (i - w['startStep']) / max(1.0, w['fullStep'] - w['startStep']))`;
+
+      if (input.archetype === 'peak_capacity') {
+        const code = `import json, numpy as np
+
+cap = float(${cap})
+floor_pct = float(${input.safetyFloorPct})
+loads = json.loads('${loadsJson}')
+
+${pyWeightHelper}
 
 lat = np.zeros(37)
 for i in range(37):
@@ -445,7 +458,8 @@ for i in range(37):
     lat[i] = (1.0 - net / cap) * 100.0
 
 custom_margin = round(float(lat.min() - floor_pct), 1)
-print(f"peak_cap={cap:.1f} min_lat_pct={lat.min():.2f} custom_margin={custom_margin:+.1f}")`;
+print(f"peak_cap={cap:.1f} min_lat_pct={lat.min():.2f} custom_margin={custom_margin:+.1f}")
+print("series_json=" + json.dumps(np.round(lat, 2).tolist()))`;
         return {
           code,
           stdout: `archetype=peak_capacity cap=${cap}${input.capacityUnit} floor=${input.safetyFloorPct}%`,
@@ -466,7 +480,7 @@ print(f"peak_cap={cap:.1f} min_lat_pct={lat.min():.2f} custom_margin={custom_mar
           (input.loads[0]?.mitigationLabel && tgs[`mit_${input.loads[0].id}`]
             ? (input.loads[0].mitigationMult ?? 0.6)
             : 1.0);
-        const code = `import numpy as np
+        const code = `import json, numpy as np
 
 pool = float(${cap})
 tout_s = float(${toutMs}) / 1000.0
@@ -495,7 +509,8 @@ for k in range(541):
         q = max(0.0, q * dec + (lam0 * amp - pool / tau) * tout_s * (1.0 - dec))
 
 custom_margin = round(float(lat.min() - float(${input.safetyFloorPct})), 1)
-print(f"pool={pool:.1f} custom_margin={custom_margin:+.1f}")`;
+print(f"pool={pool:.1f} custom_margin={custom_margin:+.1f}")
+print("series_json=" + json.dumps(np.round(lat, 2).tolist()))`;
         return {
           code,
           stdout: `archetype=queue_backpressure pool=${cap} timeout=${toutMs}ms`,
@@ -514,15 +529,7 @@ dt = hor / 36.0
 floor_pct = float(${input.safetyFloorPct})
 loads = json.loads('${loadsJson}')
 
-def weight(w, i):
-    k = w['kind']
-    if k == 'always': return 1.0
-    if k == 'interval': return 1.0 if w['startStep'] <= i <= w['endStep'] else 0.0
-    if k == 'periodic':
-        ph = i % max(1, w['periodSteps'])
-        return 1.0 if w['onStart'] <= ph <= w['onEnd'] else 0.0
-    if i <= w['startStep']: return 0.0
-    return min(1.0, (i - w['startStep']) / max(1.0, w['fullStep'] - w['startStep']))
+${pyWeightHelper}
 
 stock = np.zeros(37)
 stock[0] = cap * float(${usableInitFraction})
@@ -533,7 +540,8 @@ for i in range(1, 37):
 
 lat = (stock / cap) * 100.0
 custom_margin = round(float(lat.min() - floor_pct), 1)
-print(f"cap={cap:.1f} min_lat_pct={lat.min():.2f} custom_margin={custom_margin:+.1f}")`;
+print(f"cap={cap:.1f} min_lat_pct={lat.min():.2f} custom_margin={custom_margin:+.1f}")
+print("series_json=" + json.dumps(np.round(lat, 2).tolist()))`;
       return {
         code,
         stdout: `archetype=cumulative_stock cap=${cap}${input.capacityUnit} init=${(usableInitFraction * 100).toFixed(0)}%`,
@@ -560,6 +568,8 @@ export const SCENARIOS: Record<BuiltinScenarioId, ScenarioDefinition> & Record<s
     horizonPoints: 37,
     axisXUnit: 'h',
     axisYLabel: 'Remaining Total Pack SoC (%)',
+    safetyFloorPct: 10,
+    safeMarginTarget: 1.5,
     defaultPrivacyLock: false,
     rawPrivateSample:
       'Household: Lin Family Apt 1402, Minato-ku | Emergency Contact: +81-90-4412-8890 | Device Serial: AirSense11-JP-99281',
@@ -702,7 +712,7 @@ export const SCENARIOS: Record<BuiltinScenarioId, ScenarioDefinition> & Record<s
       const auxW = (5.5 / 1024) * bat;
       const kneeW = (75 / 1024) * bat;
       return {
-        code: `import numpy as np
+        code: `import json, numpy as np
 
 # Cloud Gemini Code Execution — Non-Linear LiFePO4 BMS & Thermal Solver
 bat_wh = float(${bat})
@@ -718,22 +728,24 @@ for i in range(1, n):
     h = i * dt
     clock_h = (14.0 + h) % 24.0
     is_sleep = (clock_h >= 22.0) or (clock_h < 6.0)
-    cpap_w = (${cpap} + ${humW.toFixed(4)}) if is_sleep else 0.0
+    cpap_w = (${cpap} + ${humW.toFixed(6)}) if is_sleep else 0.0
     ambient_drift = 1.0 + 0.18 * np.sin((h - 8.0) * np.pi / 12.0)
-    cooler_w = ${cooler} * ${coolerFactor.toFixed(2)} * max(0.82, ambient_drift)
-    peukert_eff = 0.94 if (cpap_w + cooler_w) < ${kneeW.toFixed(4)} else 0.88
-    draw = ((cpap_w + cooler_w + ${auxW.toFixed(4)}) / peukert_eff + ${effTare.toFixed(4)}) * dt
+    cooler_w = ${cooler} * ${coolerFactor.toFixed(4)} * max(0.82, ambient_drift)
+    peukert_eff = 0.94 if (cpap_w + cooler_w) < ${kneeW.toFixed(6)} else 0.88
+    draw = ((cpap_w + cooler_w + ${auxW.toFixed(6)}) / peukert_eff + ${effTare.toFixed(6)}) * dt
     rem[i] = rem[i - 1] - draw
     if rem[i] <= 0.0 and exhaust_h is None:
         prev_h = (i - 1) * dt
         exhaust_h = prev_h + (rem[i - 1] / max(1e-9, rem[i - 1] - rem[i])) * dt
 
+lat_pct = 10.0 + (rem / bat_wh) * 100.0
 if exhaust_h is not None:
     margin_h = round(float(exhaust_h - hrs), 1)
 else:
     avg_draw = (usable_wh - rem[-1]) / max(1.0, hrs)
     margin_h = round(float(rem[-1] / max(1.0, avg_draw)), 1)
-print(f"usable_wh={usable_wh:.1f} end_rem_wh={rem[-1]:.1f} margin_h={margin_h:+.1f}")`,
+print(f"usable_wh={usable_wh:.1f} end_rem_wh={rem[-1]:.1f} margin_h={margin_h:+.1f}")
+print("series_json=" + json.dumps(np.round(lat_pct, 2).tolist()))`,
         stdout: `usable_wh=${usableWh.toFixed(1)} inverter_tare=${effTare.toFixed(1)}W humidifier_extra=${humW.toFixed(1)}W`,
         discoveredInvariants: [
           `BMS low-voltage cutoff locks out bottom 10% (${(bat * 0.1).toFixed(0)} Wh unavailable below safety floor).`,
@@ -753,6 +765,8 @@ print(f"usable_wh={usable_wh:.1f} end_rem_wh={rem[-1]:.1f} margin_h={margin_h:+.
     horizonPoints: 37,
     axisXUnit: 'm',
     axisYLabel: 'Available DB Pool Headroom (%)',
+    safetyFloorPct: 15,
+    safeMarginTarget: 5.0,
     defaultPrivacyLock: false,
     rawPrivateSample:
       'Internal DSN: postgres://svc_ledger_prod@10.48.19.12:5432/settle_v4 | Merchant Tier-0 Key: mk_live_99104a8c',
@@ -898,14 +912,14 @@ print(f"usable_wh={usable_wh:.1f} end_rem_wh={rem[-1]:.1f} margin_h={margin_h:+.
       );
       const tau = (baseMs / 1000) * (cbOn ? 0.58 : 1.0);
       return {
-        code: `import numpy as np
+        code: `import json, numpy as np
 
 # Unconditionally A-Stable Exact Exponential Queue Integrator (dt=4s, 540 substeps)
 rps = float(${rps})
 tout_s = float(${timeoutMs}) / 1000.0
 retries = int(${retries})
 pool = float(${pool})
-tau = float(${tau.toFixed(6)})
+tau = float(${tau.toFixed(8)})
 budget_on = ${budgetOn ? 'True' : 'False'}
 dt = 4.0
 q = 0.0
@@ -915,10 +929,8 @@ for k in range(541):
     m = (k * dt) / 60.0
     wave = (0.65 + m * 0.06) if m < 6.0 else (1.0 + 0.16 * np.sin(((m - 6.0) / 18.0) * np.pi) if m < 24.0 else 0.82)
     lam0 = rps * wave
-    rho_inst = (lam0 * tau) / pool
     wq = (q * tau) / pool
-    w_p99 = wq + tau * (1.0 + (2.2 * rho_inst * rho_inst) / max(0.06, 1.0 - rho_inst))
-    p_to = 1.0 - np.exp(-max(0.0, w_p99 - 0.45 * tout_s) / (0.30 * tout_s))
+    p_to = 1.0 - np.exp(-max(0.0, wq + tau - 0.70 * tout_s) / (0.30 * tout_s))
     amp = 1.0 if p_to < 1e-9 else (1.0 - p_to ** (retries + 1)) / max(1e-9, 1.0 - p_to)
     if budget_on:
         amp = min(1.10, amp)
@@ -931,7 +943,8 @@ for k in range(541):
         q = max(0.0, q * dec + (lam0 * amp - pool / tau) * tout_s * (1.0 - dec))
 
 headroom = round(float(lat_pct.min() - 15.0), 1)
-print(f"tau_ms={tau*1000:.1f} min_lat_pct={lat_pct.min():.2f} headroom={headroom:+.1f}")`,
+print(f"tau_ms={tau*1000:.1f} min_lat_pct={lat_pct.min():.2f} headroom={headroom:+.1f}")
+print("series_json=" + json.dumps(np.round(lat_pct, 2).tolist()))`,
         stdout: `tau_ms=${(tau * 1000).toFixed(1)}ms retries=${retries}x pool_cap=${pool}`,
         discoveredInvariants: [
           `Little's Law: ${rps} req/s × ${(tau * 1000).toFixed(0)}ms effective hold consumes ${Math.round(rps * tau)} conns before retry amplification.`,
@@ -951,6 +964,8 @@ print(f"tau_ms={tau*1000:.1f} min_lat_pct={lat_pct.min():.2f} headroom={headroom
     horizonPoints: 37,
     axisXUnit: 'mo',
     axisYLabel: 'Liquid Emergency Buffer (%)',
+    safetyFloorPct: 18.75,
+    safeMarginTarget: 0.5,
     defaultPrivacyLock: true,
     rawPrivateSample:
       'Employee: Kenji Sato (Passport JP-8831042) | Net Salary: ¥1,180,000/mo | Shinsei Vault Acct #0049-8829104: ¥12,980,000 | Rent: ¥495,600/mo',
@@ -1091,22 +1106,24 @@ print(f"tau_ms={tau*1000:.1f} min_lat_pct={lat_pct.min():.2f} headroom={headroom
       const effBps = t.rateCapClause ? Math.min(bps, 75) : bps;
       const effLag = Math.max(0.5, lag - (t.staggerMove ? 1.4 : 0));
       return {
-        code: `import numpy as np
+        code: `import json, numpy as np
 
 # Buckingham-Pi Scrubbed Ratio Cashflow Stress Solver (Zero Raw Currency Egress)
 runway = np.zeros(37)
 runway[0] = float(${resMos})
 for m in range(1, 37):
-    fx_drag = (${effFx.toFixed(2)} / 100.0) * 0.55 * min(1.0, m / 6.0)
+    fx_drag = (${effFx.toFixed(6)} / 100.0) * 0.55 * min(1.0, m / 6.0)
     rate_drag = (${housing} / 100.0) * (${effBps} / 10000.0) * 11.5 * (1.0 if m >= 6 else 0.25)
     tax_lag = 0.15 if (m in (4, 5, 16, 17)) else 0.0
     net_burn = (0.385 + (${housing} / 100.0) + fx_drag + rate_drag + tax_lag) - 0.82
-    lockup = ${effLag.toFixed(2)} if m == 2 else 0.0
+    lockup = ${effLag.toFixed(6)} if m == 2 else 0.0
     runway[m] = runway[m - 1] - lockup - max(-0.06, net_burn)
 
+lat_pct = (runway / 16.0) * 100.0
 min_runway = float(runway.min())
 floor_delta = round(min_runway - 3.0, 1)
-print(f"m2_runway={runway[2]:.2f} min_runway_36m={min_runway:+.2f} floor_delta={floor_delta:+.1f}")`,
+print(f"m2_runway={runway[2]:.2f} min_runway_36m={min_runway:+.2f} floor_delta={floor_delta:+.1f}")
+print("series_json=" + json.dumps(np.round(lat_pct, 2).tolist()))`,
         stdout: `scrubbed_ratios_only=True eff_fx=${effFx.toFixed(1)}% eff_bps=${effBps}bps lag=${effLag.toFixed(1)}mos`,
         discoveredInvariants: [
           `Month-2 deposit + dual-residency withholding lag drops liquid buffer by ${effLag.toFixed(1)} mos alongside regular rent burn.`,
@@ -1271,10 +1288,8 @@ export function computeSimulation(
       const wave =
         m < 6 ? 0.65 + m * 0.06 : m < 24 ? 1.0 + 0.16 * Math.sin(((m - 6) / 18) * Math.PI) : 0.82;
       const lam0 = rps * wave;
-      const rhoInst = (lam0 * tau) / pool;
       const wq = (q * tau) / pool;
-      const wP99 = wq + tau * (1 + (2.2 * rhoInst * rhoInst) / Math.max(0.06, 1 - rhoInst));
-      const pTo = 1 - Math.exp(-Math.max(0, wP99 - 0.45 * toutS) / (0.3 * toutS));
+      const pTo = 1 - Math.exp(-Math.max(0, wq + tau - 0.7 * toutS) / (0.3 * toutS));
       let amp = pTo < 1e-9 ? 1 : (1 - Math.pow(pTo, retries + 1)) / Math.max(1e-9, 1 - pTo);
       if (budgetOn) {
         amp = Math.min(1.1, amp);
@@ -1296,8 +1311,7 @@ export function computeSimulation(
       }
 
       if (k < 540) {
-        const dec = Math.exp(-dt / toutS);
-        q = Math.max(0, q * dec + (lam0 * amp - pool / tau) * toutS * (1 - dec));
+        q = stepExponentialQueueExact(q, lam0 * amp, pool / tau, toutS, dt);
       }
     }
 
@@ -1524,8 +1538,7 @@ export function computeSimulation(
         cloudSeries.push(Number(Math.max(0, Math.min(100, latPct)).toFixed(1)));
       }
       if (k < 540) {
-        const dec = Math.exp(-subDt / toutS);
-        q = Math.max(0, q * dec + (lam0 * amp - cap / tau) * toutS * (1 - dec));
+        q = stepExponentialQueueExact(q, lam0 * amp, cap / tau, toutS, subDt);
       }
     }
   } else {
@@ -1618,8 +1631,11 @@ export async function computeRedactionReceipt(
 }> {
   const sc = scenario ?? SCENARIOS['typhoon-cpap'];
   const tgs = toggleValues ?? {};
+  const nanoEntities = await sharedBridge.extractSensitiveEntitiesLocal(rawText);
   const packet = await buildBuckinghamAirlockPacket(sc, paramValues, tgs, {
     rawPrivateText: rawText,
+    nanoEntities,
+    scaleCurrencyOverrides: true,
   });
   return {
     scrubbedPayload: packet.outboundJson,
@@ -1647,7 +1663,6 @@ export interface LiveHybridStatus {
   activeMode: string;
   cloudModel: string;
   deepModel: string;
-  appCheckThreshold: number;
   deviceReady: boolean;
   visionReady: boolean;
   lastInferenceSource: 'on_device' | 'in_cloud' | 'deterministic';
@@ -1666,7 +1681,7 @@ export interface NameplateExtractionResult {
   primaryLoadUnit: string;
   hiddenTareW: number;
   redactedSerialOrPii: string[];
-  inferenceSource: 'on_device' | 'in_cloud';
+  inferenceSource: 'on_device' | 'in_cloud' | 'deterministic';
   latencyMs: number;
 }
 
@@ -1798,13 +1813,30 @@ const PLAIN_NAMEPLATE_JSON_SCHEMA = {
   },
 };
 
+const PLAIN_NER_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['entities'],
+  properties: {
+    entities: {
+      type: 'array',
+      maxItems: 8,
+      items: { type: 'string', maxLength: 48 },
+    },
+  },
+};
+
 /**
- * Genuine 4-instance Firebase AI Logic Hybrid SDK runtime (@firebase/ai 3.1.0)
- * + Chrome 158 direct Prompt API (`self.LanguageModel`) zero-config local hardware bridge.
+ * Genuine multi-instance Firebase AI Logic Hybrid SDK runtime (@firebase/ai 3.1.0)
+ * + Chrome 158 direct Prompt API (`self.LanguageModel`) local hardware bridge.
  */
 export class FaultLineHybridBridge {
   private aiInstance: ReturnType<typeof getAI> | null = null;
   private fastHybridModel: GenerativeModel | null = null;
+  private specCompilerHybridModel: GenerativeModel | null = null;
+  private cloudFallbackConflictModel: GenerativeModel | null = null;
+  private cloudFallbackSpecModel: GenerativeModel | null = null;
+  private cloudVisionFallbackModel: GenerativeModel | null = null;
   private strictLocalTextModel: GenerativeModel | null = null;
   private strictLocalVisionModel: GenerativeModel | null = null;
   private cloudMonteCarloPrimary: GenerativeModel | null = null;
@@ -1816,7 +1848,6 @@ export class FaultLineHybridBridge {
     activeMode: InferenceMode.PREFER_ON_DEVICE,
     cloudModel: 'gemini-3.5-flash-lite',
     deepModel: 'gemini-3.8-flash',
-    appCheckThreshold: 0.3,
     deviceReady: false,
     visionReady: false,
     lastInferenceSource: 'deterministic',
@@ -1845,6 +1876,50 @@ export class FaultLineHybridBridge {
       },
     });
 
+    const cloudCustomSpecSchema = Schema.object({
+      properties: {
+        title: Schema.string(),
+        archetype: Schema.enumString({
+          enum: ['cumulative_stock', 'peak_capacity', 'queue_backpressure'],
+        }),
+        capacityValue: Schema.number(),
+        capacityUnit: Schema.string(),
+        horizonValue: Schema.number(),
+        axisXUnit: Schema.string(),
+        safetyFloorPct: Schema.number(),
+        loads: Schema.array({
+          items: Schema.object({
+            properties: {
+              id: Schema.string(),
+              label: Schema.string(),
+              value: Schema.number(),
+              unit: Schema.string(),
+              polarity: Schema.enumString({ enum: ['drain', 'recharge'] }),
+              windowKind: Schema.enumString({ enum: ['always', 'interval', 'periodic'] }),
+              mitigationLabel: Schema.string(),
+            },
+            optionalProperties: ['mitigationLabel'],
+          }),
+        }),
+      },
+    });
+
+    const cloudNameplateSchema = Schema.object({
+      properties: {
+        title: Schema.string(),
+        archetype: Schema.enumString({
+          enum: ['cumulative_stock', 'peak_capacity', 'queue_backpressure'],
+        }),
+        capacityValue: Schema.number(),
+        capacityUnit: Schema.string(),
+        primaryLoadLabel: Schema.string(),
+        primaryLoadValue: Schema.number(),
+        primaryLoadUnit: Schema.string(),
+        hiddenTareW: Schema.number(),
+        redactedSerialOrPii: Schema.array({ items: Schema.string() }),
+      },
+    });
+
     this.fastHybridModel = getGenerativeModel(ai, {
       mode: InferenceMode.PREFER_ON_DEVICE,
       onDeviceParams: {
@@ -1862,6 +1937,60 @@ export class FaultLineHybridBridge {
         generationConfig: {
           responseMimeType: 'application/json',
           responseSchema: cloudConflictSchema,
+        },
+      },
+    });
+
+    this.specCompilerHybridModel = getGenerativeModel(ai, {
+      mode: InferenceMode.PREFER_ON_DEVICE,
+      onDeviceParams: {
+        createOptions: {
+          expectedInputs: [{ type: 'text', languages: ['en'] }],
+          expectedOutputs: [{ type: 'text', languages: ['en'] }],
+        },
+        promptOptions: {
+          responseConstraint: PLAIN_CUSTOM_SPEC_JSON_SCHEMA,
+          ...({ omitResponseConstraintInput: true } as Record<string, unknown>),
+        },
+      },
+      inCloudParams: {
+        model: this.status.cloudModel,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: cloudCustomSpecSchema,
+        },
+      },
+    });
+
+    this.cloudFallbackConflictModel = getGenerativeModel(ai, {
+      mode: InferenceMode.ONLY_IN_CLOUD,
+      inCloudParams: {
+        model: this.status.cloudModel,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: cloudConflictSchema,
+        },
+      },
+    });
+
+    this.cloudFallbackSpecModel = getGenerativeModel(ai, {
+      mode: InferenceMode.ONLY_IN_CLOUD,
+      inCloudParams: {
+        model: this.status.cloudModel,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: cloudCustomSpecSchema,
+        },
+      },
+    });
+
+    this.cloudVisionFallbackModel = getGenerativeModel(ai, {
+      mode: InferenceMode.ONLY_IN_CLOUD,
+      inCloudParams: {
+        model: this.status.cloudModel,
+        generationConfig: {
+          responseMimeType: 'application/json',
+          responseSchema: cloudNameplateSchema,
         },
       },
     });
@@ -2032,23 +2161,80 @@ export class FaultLineHybridBridge {
   }
 
   /**
-   * Compact (<120 token) on-device / hybrid semantic contradiction checker for edited prose clauses.
+   * L3 ONLY_ON_DEVICE NER pass extracting person names, apartment/room numbers, and hardware serials
+   * when on-device Gemini Nano 4 has been warmed. Never transmits rawText off-device.
    */
-  public async auditProseContradiction(proseText: string, privacyLock: boolean): Promise<ConflictArc | null> {
+  public async extractSensitiveEntitiesLocal(rawText: string): Promise<string[]> {
+    if (!this.status.deviceReady || !rawText.trim()) return [];
+    const prompt = `Extract person names, room/apartment numbers, and device serial IDs as JSON {"entities":[...]}:\n${rawText.slice(0, 600)}`;
+    try {
+      if (this.strictLocalTextModel) {
+        const res = await this.withAbortTimeout(
+          () => this.strictLocalTextModel!.generateContent(prompt),
+          3500,
+        );
+        const obj = JSON.parse(res.response.text().replace(/^```json\s*|\s*```$/g, '').trim()) as {
+          entities?: unknown[];
+        };
+        return Array.isArray(obj.entities) ? obj.entities.map(String).filter((s) => s.length >= 3) : [];
+      }
+      const lmApi = this.getChromeLanguageModelGlobal();
+      if (lmApi && typeof lmApi.create === 'function') {
+        return await this.withAbortTimeout(async (signal) => {
+          const session = (await (lmApi.create as (opts?: unknown) => Promise<Record<string, unknown>>)({
+            signal,
+            expectedInputs: [{ type: 'text', languages: ['en'] }],
+            expectedOutputs: [{ type: 'text', languages: ['en'] }],
+          })) as Record<string, unknown>;
+          try {
+            const raw = String(
+              await (session.prompt as (p: string, o?: unknown) => Promise<string>)(prompt, {
+                signal,
+                responseConstraint: PLAIN_NER_JSON_SCHEMA,
+                omitResponseConstraintInput: true,
+              }),
+            );
+            const obj = JSON.parse(raw) as { entities?: unknown[] };
+            return Array.isArray(obj.entities)
+              ? obj.entities.map(String).filter((s) => s.length >= 3)
+              : [];
+          } finally {
+            if (typeof session.destroy === 'function') (session.destroy as () => void)();
+          }
+        }, 3500);
+      }
+    } catch {
+      // L1 + L2 scanners remain active if L3 times out
+    }
+    return [];
+  }
+
+  /**
+   * Compact (<120 token) on-device / hybrid semantic contradiction checker for prose clauses.
+   */
+  public async auditProseContradiction(
+    proseText: string,
+    privacyLock: boolean,
+    clauseIds: [string, string] = ['c1', 'c2'],
+  ): Promise<ConflictArc | null> {
     const t0 = performance.now();
     const prompt = `Audit operational plan for hidden physical/common-sense contradiction in <=22 words JSON:\n${proseText.slice(0, 900)}`;
+    const [fromClauseId, toClauseId] = clauseIds;
 
     try {
       if (this.strictLocalTextModel && privacyLock) {
         const res = await this.strictLocalTextModel.generateContent(prompt);
-        const parsed = JSON.parse(res.response.text()) as { severity?: string; summary?: string };
+        const parsed = JSON.parse(res.response.text().replace(/^```json\s*|\s*```$/g, '').trim()) as {
+          severity?: string;
+          summary?: string;
+        };
         const ms = Math.max(1, Math.round(performance.now() - t0));
         this.status.lastInferenceSource = InferenceSource.ON_DEVICE;
         this.status.lastLatencyMs = ms;
         return {
           id: 'conf-nano-live',
-          fromClauseId: 'c1',
-          toClauseId: 'c2',
+          fromClauseId,
+          toClauseId,
           severity: parsed.severity === 'critical' ? 'critical' : 'warning',
           summary: String(parsed.summary ?? 'Implicit physical assumption flagged on-device.'),
           localLatencyMs: ms,
@@ -2057,17 +2243,24 @@ export class FaultLineHybridBridge {
       }
 
       if (this.fastHybridModel && !privacyLock) {
-        const res = await this.fastHybridModel.generateContent(prompt);
-        const src =
-          res.response.inferenceSource === InferenceSource.IN_CLOUD ? 'in_cloud' : 'on_device';
+        let res;
+        let src: 'on_device' | 'in_cloud' = 'on_device';
+        try {
+          res = await this.fastHybridModel.generateContent(prompt);
+          src = res.response.inferenceSource === InferenceSource.IN_CLOUD ? 'in_cloud' : 'on_device';
+        } catch (err) {
+          if (!this.cloudFallbackConflictModel) throw err;
+          res = await this.cloudFallbackConflictModel.generateContent(prompt);
+          src = 'in_cloud';
+        }
         const parsed = JSON.parse(res.response.text()) as { severity?: string; summary?: string };
         const ms = Math.max(1, Math.round(performance.now() - t0));
         this.status.lastInferenceSource = src;
         this.status.lastLatencyMs = ms;
         return {
           id: 'conf-hybrid-live',
-          fromClauseId: 'c1',
-          toClauseId: 'c2',
+          fromClauseId,
+          toClauseId,
           severity: parsed.severity === 'critical' ? 'critical' : 'warning',
           summary: String(parsed.summary ?? 'Operational risk flagged by Hybrid AI.'),
           localLatencyMs: ms,
@@ -2108,8 +2301,8 @@ export class FaultLineHybridBridge {
             this.status.lastLatencyMs = ms;
             return {
               id: 'conf-nano-direct',
-              fromClauseId: 'c1',
-              toClauseId: 'c2',
+              fromClauseId,
+              toClauseId,
               severity: parsed.severity === 'critical' ? 'critical' : 'warning',
               summary: String(parsed.summary ?? 'On-device Nano flagged contradiction.'),
               localLatencyMs: ms,
@@ -2121,14 +2314,15 @@ export class FaultLineHybridBridge {
         }, 5500);
       }
     } catch {
-      // Deterministic heuristics below provide resilient offline fallback
+      // Deterministic heuristics provide resilient offline fallback
     }
     return null;
   }
 
   /**
    * Compiles free-form user operational plan prose into a structured ScenarioDefinition
-   * using compact (<120 token) on-device Gemini Nano 4 output + deterministic TS expansion.
+   * using dedicated specCompilerHybridModel (with explicit cloud fallback when !privacyLock)
+   * or Chrome 158 LanguageModel.
    */
   public async compileProseToCustomScenario(
     freeformProse: string,
@@ -2141,35 +2335,44 @@ export class FaultLineHybridBridge {
       let rawJsonText = '';
       let source: 'on_device' | 'in_cloud' = 'on_device';
 
-      const lmApi = this.getChromeLanguageModelGlobal();
-      if (lmApi && typeof lmApi.create === 'function') {
-        rawJsonText = await this.withAbortTimeout(async (signal) => {
-          const session = (await (lmApi.create as (opts?: unknown) => Promise<Record<string, unknown>>)({
-            signal,
-            expectedInputs: [{ type: 'text', languages: ['en'] }],
-            expectedOutputs: [{ type: 'text', languages: ['en'] }],
-          })) as Record<string, unknown>;
-          try {
-            return String(
-              await (session.prompt as (p: string, o?: unknown) => Promise<string>)(prompt, {
-                signal,
-                responseConstraint: PLAIN_CUSTOM_SPEC_JSON_SCHEMA,
-                omitResponseConstraintInput: true,
-              }),
-            );
-          } finally {
-            if (typeof session.destroy === 'function') (session.destroy as () => void)();
-          }
-        }, 5500);
-        source = 'on_device';
-      } else if (this.strictLocalTextModel && privacyLock) {
+      if (this.strictLocalTextModel && privacyLock) {
         const res = await this.strictLocalTextModel.generateContent(prompt);
-        rawJsonText = res.response.text();
+        rawJsonText = res.response.text().replace(/^```json\s*|\s*```$/g, '').trim();
         source = 'on_device';
-      } else if (this.fastHybridModel && !privacyLock) {
-        const res = await this.fastHybridModel.generateContent(prompt);
-        rawJsonText = res.response.text();
-        source = res.response.inferenceSource === InferenceSource.IN_CLOUD ? 'in_cloud' : 'on_device';
+      } else if (this.specCompilerHybridModel && !privacyLock) {
+        try {
+          const res = await this.specCompilerHybridModel.generateContent(prompt);
+          rawJsonText = res.response.text();
+          source = res.response.inferenceSource === InferenceSource.IN_CLOUD ? 'in_cloud' : 'on_device';
+        } catch (err) {
+          if (!this.cloudFallbackSpecModel) throw err;
+          const res = await this.cloudFallbackSpecModel.generateContent(prompt);
+          rawJsonText = res.response.text();
+          source = 'in_cloud';
+        }
+      } else {
+        const lmApi = this.getChromeLanguageModelGlobal();
+        if (lmApi && typeof lmApi.create === 'function') {
+          rawJsonText = await this.withAbortTimeout(async (signal) => {
+            const session = (await (lmApi.create as (opts?: unknown) => Promise<Record<string, unknown>>)({
+              signal,
+              expectedInputs: [{ type: 'text', languages: ['en'] }],
+              expectedOutputs: [{ type: 'text', languages: ['en'] }],
+            })) as Record<string, unknown>;
+            try {
+              return String(
+                await (session.prompt as (p: string, o?: unknown) => Promise<string>)(prompt, {
+                  signal,
+                  responseConstraint: PLAIN_CUSTOM_SPEC_JSON_SCHEMA,
+                  omitResponseConstraintInput: true,
+                }),
+              );
+            } finally {
+              if (typeof session.destroy === 'function') (session.destroy as () => void)();
+            }
+          }, 5500);
+          source = 'on_device';
+        }
       }
 
       if (rawJsonText) {
@@ -2234,34 +2437,57 @@ export class FaultLineHybridBridge {
   }
 
   /**
-   * Extracts hardware capacity, wattage/amps, hidden tare, and serial numbers strictly on-device
-   * from a JPEG base64 nameplate image (`inlineData` without `data:` prefix).
+   * Extracts hardware capacity, wattage/amps, hidden tare, and serial numbers from a JPEG base64
+   * nameplate image. Uses ONLY_ON_DEVICE first; falls back to cloud vision ONLY when privacyLock === false.
    */
   public async extractNameplateVision(
     jpegBase64NoPrefix: string,
+    privacyLock = true,
     hintTitle?: string,
   ): Promise<NameplateExtractionResult> {
     const t0 = performance.now();
     const prompt =
       'Read hardware nameplate / config image. Compute watts = volts * amps if shown. Return compact JSON with capacity, load, hidden tare, and serial/IP PII strings to keep local.';
+    const imagePart = {
+      type: 'inlineData' as const,
+      inlineData: { mimeType: 'image/jpeg', data: jpegBase64NoPrefix },
+    };
 
     const visionModel = this.getOrCreateLocalVisionModel();
     if (visionModel) {
-      const res = await visionModel.generateContent([
-        prompt,
-        { type: 'inlineData', inlineData: { mimeType: 'image/jpeg', data: jpegBase64NoPrefix } },
-      ]);
-      const jsonText = res.response.text().replace(/^```json\s*|\s*```$/g, '').trim();
-      const obj = JSON.parse(jsonText) as Omit<NameplateExtractionResult, 'inferenceSource' | 'latencyMs'>;
-      const ms = Math.max(1, Math.round(performance.now() - t0));
-      this.status.visionReady = true;
-      this.status.lastInferenceSource = InferenceSource.ON_DEVICE;
-      this.status.lastLatencyMs = ms;
-      return {
-        ...obj,
-        inferenceSource: 'on_device',
-        latencyMs: ms,
-      };
+      try {
+        const res = await visionModel.generateContent([prompt, imagePart]);
+        const jsonText = res.response.text().replace(/^```json\s*|\s*```$/g, '').trim();
+        const obj = JSON.parse(jsonText) as Omit<NameplateExtractionResult, 'inferenceSource' | 'latencyMs'>;
+        const ms = Math.max(1, Math.round(performance.now() - t0));
+        this.status.visionReady = true;
+        this.status.lastInferenceSource = InferenceSource.ON_DEVICE;
+        this.status.lastLatencyMs = ms;
+        return {
+          ...obj,
+          inferenceSource: 'on_device',
+          latencyMs: ms,
+        };
+      } catch (err) {
+        if (!privacyLock && this.cloudVisionFallbackModel) {
+          const res = await this.cloudVisionFallbackModel.generateContent([prompt, imagePart]);
+          const obj = JSON.parse(res.response.text()) as Omit<NameplateExtractionResult, 'inferenceSource' | 'latencyMs'>;
+          const ms = Math.max(1, Math.round(performance.now() - t0));
+          this.status.lastInferenceSource = InferenceSource.IN_CLOUD;
+          this.status.lastLatencyMs = ms;
+          return {
+            ...obj,
+            inferenceSource: 'in_cloud',
+            latencyMs: ms,
+          };
+        }
+        if (privacyLock) {
+          throw new Error(
+            'Privacy Lock is ON and local multimodal Gemini Nano 4 is not enabled; blocked cloud image upload. Enable chrome://flags/#prompt-api-for-gemini-nano-multimodal-input.',
+          );
+        }
+        throw err;
+      }
     }
 
     // Direct Chrome 158 multimodal LanguageModel API when Firebase config is absent
@@ -2314,7 +2540,9 @@ export class FaultLineHybridBridge {
     }
 
     throw new Error(
-      'On-device multimodal Gemini Nano 4 is not enabled in this browser. Enable chrome://flags/#prompt-api-for-gemini-nano-multimodal-input or select a preset test card.',
+      privacyLock
+        ? 'Privacy Lock is ON: local multimodal Gemini Nano 4 is unavailable, so FaultLine blocked image egress. Enable chrome://flags/#prompt-api-for-gemini-nano-multimodal-input.'
+        : 'Multimodal vision model is not configured in this browser.',
     );
   }
 
@@ -2333,8 +2561,12 @@ export class FaultLineHybridBridge {
 
     const runTask = async (): Promise<CloudMonteCarloRawOutput> => {
       const t0 = performance.now();
+      const noteText = rawPrivateText ?? scenario.rawPrivateSample;
+      const nanoEntities = await this.extractSensitiveEntitiesLocal(noteText);
       const airlock = await buildBuckinghamAirlockPacket(scenario, paramValues, toggleValues, {
-        rawPrivateText,
+        rawPrivateText: noteText,
+        nanoEntities,
+        scaleCurrencyOverrides: true,
       });
 
       const d = Object.keys(airlock.outboundPayload.piParams).length;

@@ -114,6 +114,14 @@ const OFF_SCRIPT_PROSE_SAMPLES: Array<{ label: string; text: string }> = [
   },
 ];
 
+function sliceDataUrlBase64(dataUrl: string): { dataUrl: string; base64NoPrefix: string } {
+  const commaIdx = dataUrl.indexOf(',');
+  return {
+    dataUrl,
+    base64NoPrefix: commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl,
+  };
+}
+
 function renderSyntheticPlateJpegBase64(preset: SyntheticNameplatePreset): {
   dataUrl: string;
   base64NoPrefix: string;
@@ -142,12 +150,7 @@ function renderSyntheticPlateJpegBase64(preset: SyntheticNameplatePreset): {
     ctx.fillText(ln, 42, 112 + idx * 42);
   });
 
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.9);
-  const commaIdx = dataUrl.indexOf(',');
-  return {
-    dataUrl,
-    base64NoPrefix: commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl,
-  };
+  return sliceDataUrlBase64(canvas.toDataURL('image/jpeg', 0.9));
 }
 
 async function fileToResizedJpegBase64(file: File): Promise<{ dataUrl: string; base64NoPrefix: string }> {
@@ -163,12 +166,7 @@ async function fileToResizedJpegBase64(file: File): Promise<{ dataUrl: string; b
   if (!ctx) throw new Error('Canvas 2D unavailable');
   ctx.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
-  const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-  const commaIdx = dataUrl.indexOf(',');
-  return {
-    dataUrl,
-    base64NoPrefix: commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl,
-  };
+  return sliceDataUrlBase64(canvas.toDataURL('image/jpeg', 0.88));
 }
 
 function buildScenarioFromNameplate(res: NameplateExtractionResult): ScenarioDefinition {
@@ -311,20 +309,26 @@ export const CustomScanModal: React.FC<CustomScanModalProps> = ({
       const { dataUrl, base64NoPrefix } = renderSyntheticPlateJpegBase64(preset);
       setPreviewImg(dataUrl);
       try {
-        const liveVision = await sharedBridge.extractNameplateVision(base64NoPrefix, preset.title);
+        const liveVision = await sharedBridge.extractNameplateVision(
+          base64NoPrefix,
+          privacyLock,
+          preset.title,
+        );
         setScanResult(liveVision);
         toast.success(
-          `[ON_DEVICE VISION · ${liveVision.latencyMs}ms] Extracted ${liveVision.capacityValue}${liveVision.capacityUnit} spec!`,
+          `[${liveVision.inferenceSource.toUpperCase()} VISION · ${liveVision.latencyMs}ms] Extracted ${liveVision.capacityValue}${liveVision.capacityUnit} spec!`,
         );
       } catch {
-        // Resilient local OCR fallback when multimodal flag is disabled on standard Chrome
-        const ms = Math.max(12, Math.round(performance.now() - t0));
+        // Honest deterministic preset fallback when multimodal model is not enabled
+        const ms = Math.max(1, Math.round(performance.now() - t0));
         setScanResult({
           ...preset.fallbackResult,
-          inferenceSource: 'on_device',
+          inferenceSource: 'deterministic',
           latencyMs: ms,
         });
-        toast.message(`Extracted hardware plate locally (${ms}ms) — serial kept on-device`);
+        toast.message(
+          `[DETERMINISTIC · ${ms}ms] Loaded synthetic plate spec (enable Chrome multimodal Nano for live vision OCR)`,
+        );
       }
     } finally {
       setBusyLabel(null);
@@ -334,13 +338,13 @@ export const CustomScanModal: React.FC<CustomScanModalProps> = ({
   const handleUploadImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    setBusyLabel('RUNNING ON-DEVICE MULTIMODAL NANO 4 VISION…');
+    setBusyLabel('RUNNING MULTIMODAL NAMEPLATE EXTRACTION…');
     try {
       const { dataUrl, base64NoPrefix } = await fileToResizedJpegBase64(file);
       setPreviewImg(dataUrl);
-      const res = await sharedBridge.extractNameplateVision(base64NoPrefix, file.name);
+      const res = await sharedBridge.extractNameplateVision(base64NoPrefix, privacyLock, file.name);
       setScanResult(res);
-      toast.success(`[ON_DEVICE VISION · ${res.latencyMs}ms] Extracted ${res.title}`);
+      toast.success(`[${res.inferenceSource.toUpperCase()} VISION · ${res.latencyMs}ms] Extracted ${res.title}`);
     } catch (err: unknown) {
       toast.error(String((err as Error)?.message ?? 'Multimodal vision unavailable'));
     } finally {
@@ -354,7 +358,7 @@ export const CustomScanModal: React.FC<CustomScanModalProps> = ({
     try {
       const [{ scenario, source, latencyMs }, extraConflict] = await Promise.all([
         sharedBridge.compileProseToCustomScenario(prose, privacyLock),
-        sharedBridge.auditProseContradiction(prose, privacyLock),
+        sharedBridge.auditProseContradiction(prose, privacyLock, ['x1', 'x2']),
       ]);
       onAdoptScenario(scenario, extraConflict);
       toast.success(

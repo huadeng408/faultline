@@ -51,11 +51,11 @@ export function computeLatentMarginForSeries(
   latentSeries: number[],
 ): number {
   if (latentSeries.length === 0) return 0;
+  const floorPct = scenario.safetyFloorPct;
 
   if (scenario.id === 'typhoon-cpap') {
     const hrs = Math.max(1, paramValues.outageHours ?? 36);
     const dt = hrs / Math.max(1, latentSeries.length - 1);
-    const floorPct = 10;
     for (let i = 1; i < latentSeries.length; i++) {
       if (latentSeries[i] <= floorPct) {
         const prev = latentSeries[i - 1];
@@ -76,10 +76,6 @@ export function computeLatentMarginForSeries(
     return Number((minMos - 3.0).toFixed(2));
   }
 
-  const floorPct =
-    scenario.id === 'singles-day-cutover'
-      ? 15
-      : (scenario.customEnvelope?.safetyFloorPct ?? 15);
   return Number((Math.min(...latentSeries) - floorPct).toFixed(2));
 }
 
@@ -100,6 +96,7 @@ export function computeAdaptiveTrustRadius(jDelta50: number[][]): number {
  * - Zero error at calibrated anchor (theta_0, u_0)
  * - Strictly positive half-spreads S_low > 0, S_high > 0 => P10 < P50 < P90 everywhere (0 quantile crossing)
  * - Out-of-domain epistemic widening +0.35 * S_0 * (1 - w_TR) => 0 fan collapse far from anchor
+ * - When discrete toggles differ (u != u_0), shifts skeleton by LF difference while retaining 0.75 * S_0 conservative spread
  */
 export function evaluateCalibratedSurrogate(
   scenario: ScenarioDefinition,
@@ -136,9 +133,7 @@ export function evaluateCalibratedSurrogate(
   }
 
   const snapAnchor = computeSimulation(scenario.id, packet.anchorParams, packet.anchorToggles, scenario);
-  const snapCurU0 = sameToggles
-    ? computeSimulation(scenario.id, paramValues, packet.anchorToggles, scenario)
-    : computeSimulation(scenario.id, paramValues, packet.anchorToggles, scenario);
+  const snapCurU0 = computeSimulation(scenario.id, paramValues, packet.anchorToggles, scenario);
   const snapCurActual = sameToggles
     ? snapCurU0
     : computeSimulation(scenario.id, paramValues, toggleValues, scenario);
@@ -177,20 +172,15 @@ export function evaluateCalibratedSurrogate(
       if (gHRow && j < gHRow.length) gHighDot += clamp(gHRow[j], -3, 3) * dtj;
     }
 
-    let toggleSpreadScale = 1.0;
-    if (!sameToggles) {
-      const curDrain = Math.max(2, (snapCurActual.latentSeries[0] ?? 100) - (snapCurActual.latentSeries[t] ?? 0));
-      const ancDrain = Math.max(2, (snapAnchor.latentSeries[0] ?? 100) - yLf0);
-      toggleSpreadScale = clamp(curDrain / ancDrain, 0.25, 1.5);
-    }
-
-    const yP50 = yLfThetaU0 + patchShift + delta50Zero * toggleSpreadScale + wTr * jDot * toggleSpreadScale;
-    const sLow =
-      toggleSpreadScale *
-      (sLow0 * Math.exp(clamp(wTr * gLowDot, -1, 1)) + 0.35 * sLow0 * (1 - wTr));
-    const sHigh =
-      toggleSpreadScale *
-      (sHigh0 * Math.exp(clamp(wTr * gHighDot, -1, 1)) + 0.35 * sHigh0 * (1 - wTr));
+    const yP50 = sameToggles
+      ? yLfThetaU0 + delta50Zero + wTr * jDot
+      : yLfThetaU0 + patchShift + 0.75 * delta50Zero;
+    const sLow = sameToggles
+      ? sLow0 * Math.exp(clamp(wTr * gLowDot, -1, 1)) + 0.35 * sLow0 * (1 - wTr)
+      : 0.75 * sLow0;
+    const sHigh = sameToggles
+      ? sHigh0 * Math.exp(clamp(wTr * gHighDot, -1, 1)) + 0.35 * sHigh0 * (1 - wTr)
+      : 0.75 * sHigh0;
 
     const yP10 = yP50 - Math.max(0.02, sLow);
     const yP90 = yP50 + Math.max(0.02, sHigh);
@@ -275,8 +265,8 @@ export function packetFromCloudMonteCarlo(
 }
 
 /**
- * Synthesizes an immediate zero-quota local stochastic surrogate packet for custom scenarios
- * before the user explicitly triggers a live 2,000-trial Cloud Python calibration.
+ * Synthesizes an immediate zero-quota local stochastic surrogate packet for newly created
+ * custom scenarios before the user explicitly triggers a live 2,000-trial Cloud Python run.
  */
 export function bootstrapLocalSurrogate(
   scenario: ScenarioDefinition,
@@ -294,11 +284,10 @@ export function bootstrapLocalSurrogate(
   for (let t = 0; t < T; t++) {
     const frac = t / Math.max(1, T - 1);
     const y0 = baseSnap.latentSeries[t] ?? 50;
-    // Correlated shock drift lowers median slightly under convex tail losses and widens with sqrt(t)
-    const medianDrift = -1.2 * Math.pow(frac, 0.85);
+    const medianDrift = -0.8 * Math.pow(frac, 0.85);
     const m = Number((y0 + medianDrift).toFixed(2));
-    const halfLow = Number((1.4 + 6.8 * Math.sqrt(frac + 0.04)).toFixed(2));
-    const halfHigh = Number((1.2 + 4.9 * Math.sqrt(frac + 0.04)).toFixed(2));
+    const halfLow = Number((0.9 + 4.8 * Math.sqrt(frac + 0.04)).toFixed(2));
+    const halfHigh = Number((0.8 + 3.6 * Math.sqrt(frac + 0.04)).toFixed(2));
     p50Latent.push(m);
     p10Latent.push(Number((m - halfLow).toFixed(2)));
     p90Latent.push(Number((m + halfHigh).toFixed(2)));
@@ -336,7 +325,7 @@ export function bootstrapLocalSurrogate(
     jDelta50,
     gLow,
     gHigh,
-    cvar90Pct: Number((Math.min(...p10Latent) - 2.1).toFixed(2)),
+    cvar90Pct: Number((Math.min(...p10Latent) - 1.6).toFixed(2)),
     domainInsights: baseSnap.discoveredInvariants,
     provenance: 'local_bootstrap_mc',
   };

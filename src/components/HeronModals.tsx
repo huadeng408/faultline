@@ -3,6 +3,7 @@ import { Check, Copy, Lock, QrCode, ShieldCheck, Smartphone, WifiOff, X } from '
 import { toast } from 'sonner';
 import {
   makeQrDataUrl,
+  sharedBridge,
   type ScenarioDefinition,
   type SimulationSnapshot,
 } from '../core/faultlineEngine';
@@ -10,7 +11,8 @@ import {
   buildBuckinghamAirlockPacket,
   type BuckinghamAirlockPacket,
 } from '../core/buckinghamAirlock';
-import { encodePocketUrl } from '../core/pocketCodec';
+import { encodePocketUrl, summarizeSurrogateForPocket } from '../core/pocketCodec';
+import type { EvaluatedSurrogateEnvelope } from '../core/monteCarloSurrogate';
 
 function copySafe(text: string): boolean {
   try {
@@ -65,16 +67,37 @@ export const HeronPrivacyAirlockModal: React.FC<PrivacyModalProps> = ({
     if (!open) return;
     let active = true;
     setScaleProofHash(null);
-    void buildBuckinghamAirlockPacket(scenario, paramValues, toggleValues, {
-      rawPrivateText: privateNote,
-      scaleCurrencyOverrides: true,
-    }).then((res) => {
-      if (active) setPacket(res);
-    });
+    void (async () => {
+      const nanoEntities = await sharedBridge.extractSensitiveEntitiesLocal(privateNote);
+      const res = await buildBuckinghamAirlockPacket(scenario, paramValues, toggleValues, {
+        rawPrivateText: privateNote,
+        nanoEntities,
+        scaleCurrencyOverrides: true,
+      });
+      if (!active) return;
+      setPacket(res);
+      const ext = res.localScaleBasis.extractedCurrencyRatios;
+      if (ext && onApplyExtractedCurrencyRatios) {
+        const nextR =
+          ext.reserveMonths !== undefined
+            ? Math.max(4, Math.min(24, Math.round(ext.reserveMonths)))
+            : undefined;
+        const nextH =
+          ext.housingRatioPct !== undefined
+            ? Math.max(20, Math.min(65, Math.round(ext.housingRatioPct)))
+            : undefined;
+        if (
+          (nextR !== undefined && nextR !== paramValues.reserveMonths) ||
+          (nextH !== undefined && nextH !== paramValues.housingRatioPct)
+        ) {
+          onApplyExtractedCurrencyRatios({ reserveMonths: nextR, housingRatioPct: nextH });
+        }
+      }
+    })();
     return () => {
       active = false;
     };
-  }, [open, scenario, paramValues, toggleValues, privateNote]);
+  }, [open, scenario, paramValues, toggleValues, privateNote, onApplyExtractedCurrencyRatios]);
 
   if (!open) return null;
 
@@ -248,6 +271,7 @@ interface QrModalProps {
   paramValues: Record<string, number>;
   toggleValues: Record<string, boolean>;
   snapshot: SimulationSnapshot;
+  surrogateEnvelope?: EvaluatedSurrogateEnvelope;
 }
 
 export const HeronOfflineQrModal: React.FC<QrModalProps> = ({
@@ -257,6 +281,7 @@ export const HeronOfflineQrModal: React.FC<QrModalProps> = ({
   paramValues,
   toggleValues,
   snapshot,
+  surrogateEnvelope,
 }) => {
   const [qrUrl, setQrUrl] = useState<string>('');
   const [pocketHref, setPocketHref] = useState<string>('');
@@ -273,10 +298,12 @@ export const HeronOfflineQrModal: React.FC<QrModalProps> = ({
       toggleValues,
       verifiedMargin: snapshot.cloudMargin,
       isSafe: snapshot.isSafe,
+      surrogateSummary: summarizeSurrogateForPocket(surrogateEnvelope),
+      customScenario: scenario.customEnvelope ? scenario : undefined,
     });
     setPocketHref(encodedUrl);
     void makeQrDataUrl(encodedUrl, '#282828', '#F6F4EE').then(setQrUrl);
-  }, [open, scenario.id, paramValues, toggleValues, snapshot.isSafe, snapshot.cloudMargin]);
+  }, [open, scenario, paramValues, toggleValues, snapshot.isSafe, snapshot.cloudMargin, surrogateEnvelope]);
 
   if (!open) return null;
 

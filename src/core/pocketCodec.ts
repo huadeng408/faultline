@@ -1,5 +1,20 @@
 import { zlibSync, unzlibSync, strToU8, strFromU8 } from 'fflate';
-import { SCENARIOS, type BuiltinScenarioId, type ScenarioId } from './faultlineEngine.ts';
+import {
+  SCENARIOS,
+  createCustomScenario,
+  type BuiltinScenarioId,
+  type CreateCustomScenarioInput,
+  type ScenarioDefinition,
+  type ScenarioId,
+} from './faultlineEngine.ts';
+import type { EvaluatedSurrogateEnvelope } from './monteCarloSurrogate.ts';
+
+export interface PocketSurrogateSummary {
+  p10Margin: number;
+  /** 5 quantized P10/P90 display knots (indices 0, 9, 18, 27, 36) for instant offline fan rendering */
+  p10Knots: number[];
+  p90Knots: number[];
+}
 
 export interface PocketSurvivalState {
   scenarioId: ScenarioId;
@@ -7,6 +22,8 @@ export interface PocketSurvivalState {
   toggleValues: Record<string, boolean>;
   verifiedMargin: number;
   isSafe: boolean;
+  surrogateSummary?: PocketSurrogateSummary;
+  hydratedCustomScenario?: ScenarioDefinition;
 }
 
 const BUILTIN_SHORT_MAP: Record<BuiltinScenarioId, string> = {
@@ -20,6 +37,8 @@ const SHORT_TO_BUILTIN: Record<string, BuiltinScenarioId> = {
   s: 'singles-day-cutover',
   e: 'expat-cashflow',
 };
+
+const KNOT_INDICES = [0, 9, 18, 27, 36];
 
 function toBase64Url(bytes: Uint8Array): string {
   let binary = '';
@@ -44,15 +63,30 @@ function fromBase64Url(token: string): Uint8Array {
   return new Uint8Array(Buffer.from(padded, 'base64'));
 }
 
+export function summarizeSurrogateForPocket(env?: EvaluatedSurrogateEnvelope): PocketSurrogateSummary | undefined {
+  if (!env) return undefined;
+  return {
+    p10Margin: Number(env.p10Margin.toFixed(1)),
+    p10Knots: KNOT_INDICES.map((i) => Math.round(env.p10Display[i] ?? 0)),
+    p90Knots: KNOT_INDICES.map((i) => Math.round(env.p90Display[i] ?? 0)),
+  };
+}
+
 /**
- * Compresses operational survival parameters + toggles into a compact (<300 char)
- * `https://<origin>/?pocket=<base64url>` link that opens natively in any mobile camera QR scanner.
+ * Compresses operational survival parameters, toggles, quantized surrogate fan knots,
+ * and custom scenario envelopes into a compact `?pocket=<base64url>` link (<300 chars for built-in).
  */
-export function encodePocketUrl(origin: string, state: PocketSurvivalState): string {
+export function encodePocketUrl(
+  origin: string,
+  state: PocketSurvivalState & { customScenario?: ScenarioDefinition },
+): string {
   const cleanOrigin = origin.replace(/\/+$/g, '') || 'https://faultline-v3.web.app';
   const isBuiltin = state.scenarioId in BUILTIN_SHORT_MAP;
+  const sur = state.surrogateSummary
+    ? [state.surrogateSummary.p10Margin, state.surrogateSummary.p10Knots, state.surrogateSummary.p90Knots]
+    : null;
 
-  let compactObj: unknown;
+  let compactPayload: unknown;
   if (isBuiltin) {
     const bId = state.scenarioId as BuiltinScenarioId;
     const sc = SCENARIOS[bId];
@@ -61,28 +95,53 @@ export function encodePocketUrl(origin: string, state: PocketSurvivalState): str
     sc.toggles.forEach((tg, idx) => {
       if (state.toggleValues[tg.key]) tMask |= 1 << idx;
     });
-    compactObj = [
-      1, // version 1 positional tuple
-      BUILTIN_SHORT_MAP[bId],
-      pArr,
-      tMask,
-      Number(state.verifiedMargin.toFixed(2)),
-      state.isSafe ? 1 : 0,
-    ];
+    compactPayload = sur
+      ? [1, BUILTIN_SHORT_MAP[bId], pArr, tMask, Number(state.verifiedMargin.toFixed(2)), state.isSafe ? 1 : 0, sur]
+      : [1, BUILTIN_SHORT_MAP[bId], pArr, tMask, Number(state.verifiedMargin.toFixed(2)), state.isSafe ? 1 : 0];
   } else {
-    compactObj = [
+    const env = state.customScenario?.customEnvelope;
+    const customCreateInput: CreateCustomScenarioInput | null =
+      state.customScenario && env
+        ? {
+            id: state.customScenario.id,
+            title: state.customScenario.title,
+            archetype: env.archetype,
+            marginUnit: state.customScenario.marginUnit,
+            horizonLabel: state.customScenario.horizonLabel,
+            axisXUnit: state.customScenario.axisXUnit,
+            safetyFloorPct: env.safetyFloorPct,
+            usableInitFraction: env.usableInitFraction,
+            capacityValue: env.capacityValue,
+            capacityUnit: env.capacityUnit,
+            horizonValue: env.horizonValue,
+            loads: env.loads,
+          }
+        : null;
+
+    compactPayload = [
       2,
       state.scenarioId,
       state.paramValues,
       state.toggleValues,
       Number(state.verifiedMargin.toFixed(2)),
       state.isSafe ? 1 : 0,
+      sur,
+      customCreateInput,
     ];
   }
 
-  const rawBytes = strToU8(JSON.stringify(compactObj));
+  const rawBytes = strToU8(JSON.stringify(compactPayload));
   const compressed = zlibSync(rawBytes, { level: 9 });
   return `${cleanOrigin}/?pocket=${toBase64Url(compressed)}`;
+}
+
+function parseSurrogateTuple(raw: unknown): PocketSurrogateSummary | undefined {
+  if (!Array.isArray(raw) || raw.length < 3) return undefined;
+  return {
+    p10Margin: Number(raw[0]),
+    p10Knots: Array.isArray(raw[1]) ? (raw[1] as unknown[]).map(Number) : [],
+    p90Knots: Array.isArray(raw[2]) ? (raw[2] as unknown[]).map(Number) : [],
+  };
 }
 
 export function decodePocketUrl(urlOrToken: string): PocketSurvivalState | null {
@@ -118,16 +177,22 @@ export function decodePocketUrl(urlOrToken: string): PocketSurvivalState | null 
         toggleValues,
         verifiedMargin: Number(tuple[4]),
         isSafe: Boolean(tuple[5]),
+        surrogateSummary: parseSurrogateTuple(tuple[6]),
       };
     }
 
     if (tuple[0] === 2) {
+      const customDef = tuple[7]
+        ? createCustomScenario(tuple[7] as CreateCustomScenarioInput)
+        : undefined;
       return {
         scenarioId: String(tuple[1]),
         paramValues: (tuple[2] as Record<string, number>) ?? {},
         toggleValues: (tuple[3] as Record<string, boolean>) ?? {},
         verifiedMargin: Number(tuple[4]),
         isSafe: Boolean(tuple[5]),
+        surrogateSummary: parseSurrogateTuple(tuple[6]),
+        hydratedCustomScenario: customDef,
       };
     }
     return null;

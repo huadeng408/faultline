@@ -40,10 +40,7 @@ export interface MinimalRepairPlan {
 }
 
 function getSafeTargetMargin(scenario: ScenarioDefinition): number {
-  if (scenario.id === 'typhoon-cpap') return 1.5;
-  if (scenario.id === 'singles-day-cutover') return 5.0;
-  if (scenario.id === 'expat-cashflow') return 0.5;
-  return 0.0;
+  return scenario.safeMarginTarget;
 }
 
 function evaluateSafetyExcess(
@@ -52,18 +49,19 @@ function evaluateSafetyExcess(
   toggles: Record<string, boolean>,
   targetMargin: number,
   surrogate?: CalibratedSurrogatePacket,
-): { excess: number; nominalMargin: number; cloudSeries: number[] } {
+): { excess: number; nominalMargin: number; p10Margin: number; cloudSeries: number[] } {
   const snap = computeSimulation(scenario.id, params, toggles, scenario);
   let excess = snap.cloudMargin - targetMargin;
+  let p10Margin = snap.cloudMargin;
 
   if (surrogate) {
     const surr = evaluateCalibratedSurrogate(scenario, params, toggles, surrogate);
-    // Require worst-10% (P10) storm trajectory to also stay non-negative (>= 0% covenant floor)
-    const p10FloorTarget = 0.0;
-    excess = Math.min(excess, surr.p10Margin - p10FloorTarget);
+    p10Margin = surr.p10Margin;
+    // Enforce Worst-10% (P10) storm margin >= M_safe verbatim per Spec §4.3
+    excess = Math.min(excess, surr.p10Margin - targetMargin);
   }
 
-  return { excess, nominalMargin: snap.cloudMargin, cloudSeries: snap.cloudSeries };
+  return { excess, nominalMargin: snap.cloudMargin, p10Margin, cloudSeries: snap.cloudSeries };
 }
 
 /**
