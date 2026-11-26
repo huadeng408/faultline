@@ -1,0 +1,16 @@
+{
+  "name": "FaultLine v3 · Hybrid AI Stress-Test Workbench",
+  "short_name": "FaultLine v3",
+  "description": "Privacy-locked operational stress-testing workbench powered by on-device Gemini Nano 4, Buckingham-Pi airlock, and Cloud Python Monte Carlo.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#F6F4EE",
+  "theme_color": "#282828",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 192 192'%3E%3Crect width='192' height='192' fill='%23F6F4EE' stroke='%23282828' stroke-width='12'/%3E%3Cpath d='M32 146 L82 54 L114 108 L158 42' stroke='%23FA3600' stroke-width='18' fill='none'/%3E%3C/svg%3E",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    }
+  ]
+}

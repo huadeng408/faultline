@@ -2,9 +2,9 @@ import React, { useEffect, useMemo, useState } from 'react';
 import Lenis from 'lenis';
 import { Toaster, toast } from 'sonner';
 import {
+  Camera,
   Cpu,
   Download,
-  ExternalLink,
   Lock,
   QrCode,
   ShieldAlert,
@@ -15,15 +15,29 @@ import {
   SCENARIOS,
   computeRedactionReceipt,
   computeSimulation,
+  getScenarioById,
   sharedBridge,
+  type BuiltinScenarioId,
+  type ConflictArc,
+  type ScenarioDefinition,
   type ScenarioId,
 } from './core/faultlineEngine';
+import {
+  bootstrapLocalSurrogate,
+  evaluateCalibratedSurrogate,
+  packetFromCloudMonteCarlo,
+  type CalibratedSurrogatePacket,
+} from './core/monteCarloSurrogate';
+import { SEED_SURROGATES } from './core/seedSurrogates';
+import { solveMinimalRepair } from './core/minimalRepairSolver';
+import { decodePocketUrl } from './core/pocketCodec';
 import { injectStudioFonts, downloadBundleZip } from './lib/studioAssets';
 import { DraftingCrosshairOverlay } from './components/DraftingCrosshairOverlay';
 import { HeronBlueprintStage } from './components/HeronBlueprintStage';
 import { HeronTangleSpec, buildPiecewiseProofSchedule } from './components/HeronTangleSpec';
 import { SimplexDraftingChart } from './components/SimplexDraftingChart';
 import { HeronFooterInkWordmark } from './components/HeronFooterInkWordmark';
+import { CustomScanModal } from './components/CustomScanModal';
 import {
   HeronIphoneFaultPadDrawer,
   HeronOfflineQrModal,
@@ -32,17 +46,17 @@ import {
 
 injectStudioFonts();
 
-function getInitialParams(id: ScenarioId): Record<string, number> {
+function getInitialParamsFromSpec(sc: ScenarioDefinition): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const p of SCENARIOS[id].params) {
+  for (const p of sc.params) {
     out[p.key] = p.value;
   }
   return out;
 }
 
-function getInitialToggles(id: ScenarioId): Record<string, boolean> {
+function getInitialTogglesFromSpec(sc: ScenarioDefinition): Record<string, boolean> {
   const out: Record<string, boolean> = {};
-  for (const t of SCENARIOS[id].toggles) {
+  for (const t of sc.toggles) {
     out[t.key] = t.enabled;
   }
   return out;
@@ -50,19 +64,39 @@ function getInitialToggles(id: ScenarioId): Record<string, boolean> {
 
 export default function App() {
   const [scenarioId, setScenarioId] = useState<ScenarioId>('typhoon-cpap');
+  const [customScenario, setCustomScenario] = useState<ScenarioDefinition | null>(null);
+  const [extraConflict, setExtraConflict] = useState<ConflictArc | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, number>>(() =>
-    getInitialParams('typhoon-cpap'),
+    getInitialParamsFromSpec(SCENARIOS['typhoon-cpap']),
   );
   const [toggleValues, setToggleValues] = useState<Record<string, boolean>>(() =>
-    getInitialToggles('typhoon-cpap'),
+    getInitialTogglesFromSpec(SCENARIOS['typhoon-cpap']),
   );
+  const [privateNotes, setPrivateNotes] = useState<Record<string, string>>(() => ({
+    'typhoon-cpap': SCENARIOS['typhoon-cpap'].rawPrivateSample,
+    'singles-day-cutover': SCENARIOS['singles-day-cutover'].rawPrivateSample,
+    'expat-cashflow': SCENARIOS['expat-cashflow'].rawPrivateSample,
+  }));
+  const [surrogateMap, setSurrogateMap] = useState<Record<string, CalibratedSurrogatePacket>>(() => ({
+    ...SEED_SURROGATES,
+  }));
+  const [liveCodeOverride, setLiveCodeOverride] = useState<{
+    scenarioId: string;
+    code: string;
+    stdout: string;
+    insights: string[];
+  } | null>(null);
+  const [nanoWarmPct, setNanoWarmPct] = useState<number | null>(null);
+  const [, setBridgeTick] = useState(0);
   const [isCalibrating, setIsCalibrating] = useState(false);
   const [inspectedStepFrac, setInspectedStepFrac] = useState<number | null>(null);
   const [privacyOpen, setPrivacyOpen] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [iphoneOpen, setIphoneOpen] = useState(false);
+  const [customScanOpen, setCustomScanOpen] = useState(false);
+  const [mv3SelectionProse, setMv3SelectionProse] = useState<string>('');
 
-  // Initialize Studio Display WOFF font + Lenis smooth architectural scroll
+  // Initialize Studio Display WOFF font + Lenis smooth scroll + URL ?pocket= & MV3 Side-Panel hydration
   useEffect(() => {
     injectStudioFonts();
     const lenis = new Lenis({
@@ -75,24 +109,172 @@ export default function App() {
       raf = window.requestAnimationFrame(step);
     };
     raf = window.requestAnimationFrame(step);
+
+    // Hydrate ?pocket= survival QR link if present
+    if (typeof window !== 'undefined' && window.location.search.includes('pocket=')) {
+      const pocket = decodePocketUrl(window.location.href);
+      if (pocket && pocket.scenarioId in SCENARIOS) {
+        setScenarioId(pocket.scenarioId);
+        setParamValues(pocket.paramValues);
+        setToggleValues(pocket.toggleValues);
+        if (window.innerWidth < 768) {
+          setIphoneOpen(true);
+        }
+        toast.success(`Hydrated offline survival schedule (${pocket.scenarioId})`);
+      }
+    }
+
+    // Listen for Chrome MV3 Side-Panel right-click "Stress-Test Selection in FaultLine"
+    const chromeGlobal = (globalThis as unknown as {
+      chrome?: {
+        storage?: {
+          local?: {
+            get: (keys: string[], cb: (items: Record<string, unknown>) => void) => void;
+            remove: (keys: string[]) => void;
+          };
+          onChanged?: {
+            addListener: (cb: (changes: Record<string, { newValue?: unknown }>) => void) => void;
+          };
+        };
+      };
+    }).chrome;
+
+    if (chromeGlobal?.storage?.local) {
+      chromeGlobal.storage.local.get(['faultline_selection_text'], (items) => {
+        const txt = String(items.faultline_selection_text ?? '').trim();
+        if (txt) {
+          setMv3SelectionProse(txt);
+          setCustomScanOpen(true);
+          chromeGlobal.storage?.local?.remove(['faultline_selection_text']);
+        }
+      });
+      chromeGlobal.storage.onChanged?.addListener((changes) => {
+        const nextTxt = String(changes.faultline_selection_text?.newValue ?? '').trim();
+        if (nextTxt) {
+          setMv3SelectionProse(nextTxt);
+          setCustomScanOpen(true);
+        }
+      });
+    }
+
     return () => {
       window.cancelAnimationFrame(raf);
       lenis.destroy();
     };
   }, []);
 
-  const scenario = SCENARIOS[scenarioId];
-  const snapshot = useMemo(
-    () => computeSimulation(scenarioId, paramValues, toggleValues),
-    [scenarioId, paramValues, toggleValues],
+  const scenario: ScenarioDefinition = useMemo(() => {
+    if (customScenario && scenarioId === customScenario.id) {
+      return customScenario;
+    }
+    return getScenarioById(scenarioId);
+  }, [scenarioId, customScenario]);
+
+  const activePrivateNote = privateNotes[scenario.id] ?? scenario.rawPrivateSample;
+
+  const baseSnapshot = useMemo(
+    () => computeSimulation(scenario.id, paramValues, toggleValues, scenario),
+    [scenario, paramValues, toggleValues],
   );
 
-  const handleSelectScenario = (nextId: ScenarioId) => {
+  const snapshot = useMemo(() => {
+    const mergedConflicts =
+      extraConflict && !baseSnapshot.isSafe
+        ? [extraConflict, ...baseSnapshot.conflicts]
+        : baseSnapshot.conflicts;
+    if (liveCodeOverride && liveCodeOverride.scenarioId === scenario.id) {
+      return {
+        ...baseSnapshot,
+        conflicts: mergedConflicts,
+        pythonCode: liveCodeOverride.code || baseSnapshot.pythonCode,
+        pythonStdout: liveCodeOverride.stdout || baseSnapshot.pythonStdout,
+        discoveredInvariants:
+          liveCodeOverride.insights.length > 0
+            ? liveCodeOverride.insights
+            : baseSnapshot.discoveredInvariants,
+      };
+    }
+    return {
+      ...baseSnapshot,
+      conflicts: mergedConflicts,
+    };
+  }, [baseSnapshot, extraConflict, liveCodeOverride, scenario.id]);
+
+  const activeSurrogatePacket = useMemo<CalibratedSurrogatePacket>(() => {
+    const existing = surrogateMap[scenario.id];
+    if (existing) return existing;
+    return bootstrapLocalSurrogate(scenario, paramValues, toggleValues);
+  }, [surrogateMap, scenario, paramValues, toggleValues]);
+
+  const surrogateEnvelope = useMemo(
+    () => evaluateCalibratedSurrogate(scenario, paramValues, toggleValues, activeSurrogatePacket),
+    [scenario, paramValues, toggleValues, activeSurrogatePacket],
+  );
+
+  const minimalRepairPlan = useMemo(
+    () => solveMinimalRepair(scenario, paramValues, toggleValues, activeSurrogatePacket),
+    [scenario, paramValues, toggleValues, activeSurrogatePacket],
+  );
+
+  const minimalRepairButtonLabel = useMemo(() => {
+    if (minimalRepairPlan.kind === 'discrete_sufficient') {
+      return `PARETO MIN-FIX (${minimalRepairPlan.activatedToggleKeys.length}/${scenario.toggles.length} PATCHES)`;
+    }
+    if (minimalRepairPlan.kind === 'hybrid_continuous_sized' && minimalRepairPlan.sizedParam) {
+      return `MIN-FIX + SIZE ${minimalRepairPlan.sizedParam.toValue} ${minimalRepairPlan.sizedParam.unit}`;
+    }
+    if (
+      minimalRepairPlan.kind === 'out_of_range_extrapolated' &&
+      minimalRepairPlan.extrapolatedRequirement
+    ) {
+      return `NEEDS ≥${minimalRepairPlan.extrapolatedRequirement.requiredValue} ${minimalRepairPlan.extrapolatedRequirement.unit}`;
+    }
+    return 'APPROVE MINIMAL-FIX REPAIR';
+  }, [minimalRepairPlan, scenario.toggles.length]);
+
+  const handleWarmNanoClick = async () => {
+    setNanoWarmPct(5);
+    const ok = await sharedBridge.warmDeviceModel((pct) => setNanoWarmPct(pct));
+    setNanoWarmPct(null);
+    setBridgeTick((v) => v + 1);
+    if (ok) {
+      const q = sharedBridge.status.contextWindowQuota;
+      toast.success(
+        `Gemini Nano 4 ready on-device (${sharedBridge.status.lastLatencyMs}ms${q > 0 ? ` · ${q} ctx window` : ''})`,
+      );
+    } else {
+      toast.message(
+        'On-device Gemini Nano not active in this browser; deterministic & Buckingham-Π hybrid engine active.',
+      );
+    }
+  };
+
+  const handleSelectScenario = (nextId: BuiltinScenarioId) => {
+    const nextSc = SCENARIOS[nextId];
     setScenarioId(nextId);
-    setParamValues(getInitialParams(nextId));
-    setToggleValues(getInitialToggles(nextId));
+    setExtraConflict(null);
+    setParamValues(getInitialParamsFromSpec(nextSc));
+    setToggleValues(getInitialTogglesFromSpec(nextSc));
     setInspectedStepFrac(null);
-    void sharedBridge.warmDeviceModel();
+  };
+
+  const handleAdoptCustomScenario = (
+    nextCustom: ScenarioDefinition,
+    conflict?: ConflictArc | null,
+  ) => {
+    const initP = getInitialParamsFromSpec(nextCustom);
+    const initT = getInitialTogglesFromSpec(nextCustom);
+    setCustomScenario(nextCustom);
+    setScenarioId(nextCustom.id);
+    setExtraConflict(conflict ?? null);
+    setParamValues(initP);
+    setToggleValues(initT);
+    setPrivateNotes((prev) => ({ ...prev, [nextCustom.id]: nextCustom.rawPrivateSample }));
+    setSurrogateMap((prev) => ({
+      ...prev,
+      [nextCustom.id]: bootstrapLocalSurrogate(nextCustom, initP, initT),
+    }));
+    setInspectedStepFrac(null);
   };
 
   const handleScrubParam = (key: string, val: number) => {
@@ -109,58 +291,98 @@ export default function App() {
   };
 
   const handleApproveMitigationFix = () => {
-    const next: Record<string, boolean> = {};
-    for (const tg of scenario.toggles) {
-      next[tg.key] = true;
+    setParamValues(minimalRepairPlan.repairedParams);
+    setToggleValues(minimalRepairPlan.repairedToggles);
+    if (minimalRepairPlan.kind === 'out_of_range_extrapolated') {
+      toast.warning(minimalRepairPlan.summary);
+    } else {
+      toast.success(minimalRepairPlan.summary);
     }
-    setToggleValues(next);
-    toast.success('All structural mitigations approved — ink-seep verification stamped!');
   };
 
   const handleResetDefaults = () => {
-    setParamValues(getInitialParams(scenarioId));
-    setToggleValues(getInitialToggles(scenarioId));
+    setParamValues(getInitialParamsFromSpec(scenario));
+    setToggleValues(getInitialTogglesFromSpec(scenario));
     setInspectedStepFrac(null);
     toast.message('Restored baseline fault scenario parameters');
   };
 
-  const handleRunCloudCalibration = () => {
+  const handleRunCloudCalibration = async () => {
+    if (isCalibrating) return;
     setIsCalibrating(true);
-    void sharedBridge.warmDeviceModel();
-    window.setTimeout(() => {
+    try {
+      if (sharedBridge.hasLiveCloud()) {
+        const cloudRes = await sharedBridge.runCloudMonteCarlo(
+          scenario,
+          paramValues,
+          toggleValues,
+          activePrivateNote,
+          true,
+        );
+        const nextPacket = packetFromCloudMonteCarlo(scenario, paramValues, toggleValues, cloudRes);
+        setSurrogateMap((prev) => ({ ...prev, [scenario.id]: nextPacket }));
+        setLiveCodeOverride({
+          scenarioId: scenario.id,
+          code: cloudRes.executedPythonCode,
+          stdout: cloudRes.stdout,
+          insights: cloudRes.domainInsights,
+        });
+        setBridgeTick((v) => v + 1);
+        toast.success(
+          `[${cloudRes.inferenceSource.toUpperCase()} · ${(cloudRes.latencyMs / 1000).toFixed(2)}s] 2,000-MC Python calibrated (${cloudRes.modelUsed})!`,
+        );
+      } else {
+        // Re-anchor multi-fidelity surrogate locally around current parameters when no cloud key is present
+        const reanchored = bootstrapLocalSurrogate(scenario, paramValues, toggleValues);
+        setSurrogateMap((prev) => ({ ...prev, [scenario.id]: reanchored }));
+        toast.success(
+          `Re-anchored Buckingham-Π surrogate at current point (P10=${surrogateEnvelope.p10Margin >= 0 ? '+' : ''}${surrogateEnvelope.p10Margin.toFixed(1)} ${scenario.marginUnit})`,
+        );
+      }
+    } catch (err: unknown) {
+      toast.error(String((err as Error)?.message ?? 'Cloud Python calibration error'));
+    } finally {
       setIsCalibrating(false);
-      toast.success(
-        `Cloud Gemini Python solver verified margin: ${snapshot.cloudMargin > 0 ? '+' : ''}${
-          snapshot.cloudMargin
-        } ${scenario.marginUnit}`,
-      );
-    }, 420);
+    }
   };
 
   const handleExportCadZip = async () => {
-    const receipt = await computeRedactionReceipt(scenario.rawPrivateSample, paramValues);
+    const receipt = await computeRedactionReceipt(
+      activePrivateNote,
+      paramValues,
+      scenario,
+      toggleValues,
+    );
     const piecewise = buildPiecewiseProofSchedule(scenario, paramValues, toggleValues, snapshot);
     const auditJson = JSON.stringify(
       {
-        schema: 'faultline.heron.cad_audit.v3.5',
-        scenarioId,
+        schema: 'faultline.heron.cad_audit.v3.6',
+        scenarioId: scenario.id,
         title: scenario.title,
         isCompliant: snapshot.isSafe,
         margins: {
-          onDeviceNano: snapshot.localMargin,
-          cloudPython: snapshot.cloudMargin,
+          nominalLinear: snapshot.localMargin,
+          nonLinearGroundTruth: snapshot.cloudMargin,
+          worst10PctStormP10: surrogateEnvelope.p10Margin,
           driftDelta: snapshot.driftDelta,
           unit: scenario.marginUnit,
         },
         failurePointLabel: snapshot.failurePointLabel,
-        scrubbedParameters: paramValues,
+        buckinghamPiPayload: receipt.airlockPacket.outboundPayload,
         mitigationPatches: toggleValues,
+        minimalRepairRecommendation: {
+          kind: minimalRepairPlan.kind,
+          summary: minimalRepairPlan.summary,
+        },
         piecewiseProofSchedule: piecewise,
         sha256AirlockReceipt: receipt.sha256Hex,
         series: {
           xLabels: snapshot.xLabels,
-          localNanoPct: snapshot.localSeries,
-          cloudPythonPct: snapshot.cloudSeries,
+          nominalLinearPct: snapshot.localSeries,
+          nonLinearPct: snapshot.cloudSeries,
+          mcP10Pct: surrogateEnvelope.p10Display,
+          mcP50Pct: surrogateEnvelope.p50Display,
+          mcP90Pct: surrogateEnvelope.p90Display,
         },
       },
       null,
@@ -168,22 +390,23 @@ export default function App() {
     );
 
     const verifyPy = `#!/usr/bin/env python3
-"""FaultLine v3 · Architectural CAD Simplex Verification Script (${scenarioId})"""
+"""FaultLine v3 · Buckingham-Pi & Simplex Verification Script (${scenario.id})"""
 ${snapshot.pythonCode}
 
-# Piecewise Constraint Proof Assertions
-expected_cloud_margin = ${snapshot.cloudMargin}
+# Constraint Proof Assertions
+expected_margin = ${snapshot.cloudMargin}
 is_compliant = ${snapshot.isSafe ? 'True' : 'False'}
-print(f"[CAD AUDIT STAMP] scenario=${scenarioId} compliant={is_compliant} expected_margin={expected_cloud_margin:+.1f} ${scenario.marginUnit}")
+print(f"[CAD AUDIT STAMP] scenario=${scenario.id} compliant={is_compliant} expected_margin={expected_margin:+.1f} ${scenario.marginUnit}")
 `;
 
     const blueprintMd = `# FAULTLINE V3 · ARCHITECTURAL CAD AUDIT BLUEPRINT
-- **Scenario**: ${scenario.title} (\`${scenarioId}\`)
+- **Scenario**: ${scenario.title} (\`${scenario.id}\`)
 - **Compliance Stamp**: ${snapshot.isSafe ? 'CODE COMPLIANT (Q.E.D.)' : `VIOLATIONS DETECTED (${snapshot.conflicts.length})`}
-- **Ground-Truth Cloud Python Margin**: ${snapshot.cloudMargin >= 0 ? '+' : ''}${snapshot.cloudMargin} ${scenario.marginUnit}
-- **0.28s On-Device Linear Estimate**: ${snapshot.localMargin >= 0 ? '+' : ''}${snapshot.localMargin} ${scenario.marginUnit}
-- **SHA-256 Privacy Airlock Digest**: \`${receipt.sha256Hex}\`
-- **Design Homage**: [Heron AI — Awwwards SOTD](https://www.awwwards.com/sites/heron-ai) · [The FWA FOTD](https://legacy.thefwa.com/cases/heronai)
+- **Ground-Truth Non-Linear Margin**: ${snapshot.cloudMargin >= 0 ? '+' : ''}${snapshot.cloudMargin} ${scenario.marginUnit}
+- **Worst-10% (P10) 2,000-MC Storm Margin**: ${surrogateEnvelope.p10Margin >= 0 ? '+' : ''}${surrogateEnvelope.p10Margin.toFixed(1)} ${scenario.marginUnit}
+- **Naive Linear Estimate**: ${snapshot.localMargin >= 0 ? '+' : ''}${snapshot.localMargin} ${scenario.marginUnit}
+- **SHA-256 Buckingham-Π Airlock Digest**: \`${receipt.sha256Hex}\`
+- **License**: Apache-2.0
 
 ## Piecewise Constraint Proof Schedule
 | Window | Regime | Governing Relation | End Reserve | Verdict |
@@ -201,15 +424,30 @@ ${piecewise
 ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n')}
 `;
 
-    downloadBundleZip(`heron-cad-audit-${scenarioId}.zip`, {
-      [`heron_cad_audit_${scenarioId}.json`]: auditJson,
-      [`verify_simplex_${scenarioId}.py`]: verifyPy,
+    downloadBundleZip(`faultline-cad-audit-${scenario.id}.zip`, {
+      [`faultline_cad_audit_${scenario.id}.json`]: auditJson,
+      [`buckingham_pi_airlock_${scenario.id}.json`]: receipt.scrubbedPayload,
+      [`verify_simplex_${scenario.id}.py`]: verifyPy,
       'ARCHITECTURAL_BLUEPRINT_AUDIT.md': blueprintMd,
     });
-    toast.success(`Exported heron-cad-audit-${scenarioId}.zip (.json + .py + .md)`);
+    toast.success(`Exported faultline-cad-audit-${scenario.id}.zip (.json + .py + .md)`);
   };
 
   const rulerTicks = Array.from({ length: 15 }, (_, idx) => idx * 100);
+  const bridgeStat = sharedBridge.status;
+  const runtimeSubtitle =
+    bridgeStat.lastInferenceSource === 'on_device'
+      ? `[ON_DEVICE · ${bridgeStat.lastLatencyMs}MS${bridgeStat.contextWindowQuota > 0 ? ` · ${bridgeStat.contextTokensUsed}/${bridgeStat.contextWindowQuota} TOK` : ''}] ⇄ [BUCKINGHAM-Π]`
+      : bridgeStat.lastInferenceSource === 'in_cloud'
+        ? `[IN_CLOUD · ${(bridgeStat.lastLatencyMs / 1000).toFixed(2)}S PYTHON] ⇄ [SHA-256 VERIFIED]`
+        : `[DETERMINISTIC <1MS] ⇄ [2,000-MC SURROGATE READY]`;
+
+  const cloudProvenanceLabel =
+    activeSurrogatePacket.provenance === 'live_cloud_2000mc'
+      ? 'IN_CLOUD 2,000-MC'
+      : activeSurrogatePacket.provenance === 'seed_numpy_2000mc'
+        ? 'SEED 2,000-MC + PY'
+        : 'BOOTSTRAP MC + PY';
 
   return (
     <div className="min-h-screen bg-[#F6F4EE] text-[#282828] relative selection:bg-[#282828] selection:text-[#F6F4EE]">
@@ -246,7 +484,7 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
 
       {/* Main Framed Architectural Sheet */}
       <div className="max-w-[1400px] mx-auto border-x border-b border-[#D4D2CA] bg-[#F6F4EE] relative">
-        {/* Top Navigation & Attribution Header Bar */}
+        {/* Top Navigation & Hybrid Hardware Header Bar */}
         <header className="border-b border-[#D4D2CA] bg-[#FAF9F5] grid grid-cols-1 lg:grid-cols-12">
           <div className="lg:col-span-4 px-4 py-3 border-b lg:border-b-0 lg:border-r border-[#D4D2CA] flex items-center justify-between gap-2">
             <div className="flex items-center gap-2.5 min-w-0">
@@ -258,63 +496,84 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
                   FAULTLINE V3 · CAD AUDIT
                 </div>
                 <div className="heron-mono text-[9.5px] text-[#575652] truncate">
-                  [ON_DEVICE · 280MS] ⇄ [ONLY_IN_CLOUD · PYTHON]
+                  {runtimeSubtitle}
                 </div>
               </div>
             </div>
 
             <div className="hidden sm:flex items-center gap-1 shrink-0">
-              <a
-                href="https://www.awwwards.com/sites/heron-ai"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="heron-mono text-[9px] font-bold px-1.5 py-1 border border-[#D4D2CA] bg-[#F6F4EE] text-[#282828] hover:border-[#282828] inline-flex items-center gap-1 no-underline"
+              <button
+                type="button"
+                onClick={() => void handleWarmNanoClick()}
+                className="heron-mono text-[9px] font-bold px-2 py-1 border border-[#282828] bg-[#F6F4EE] text-[#282828] hover:bg-[#282828] hover:text-[#F6F4EE] cursor-pointer inline-flex items-center gap-1.5"
               >
-                SOTD <ExternalLink className="w-2.5 h-2.5 text-[#FA3600]" />
-              </a>
-              <a
-                href="https://legacy.thefwa.com/cases/heronai"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="heron-mono text-[9px] font-bold px-1.5 py-1 border border-[#D4D2CA] bg-[#F6F4EE] text-[#282828] hover:border-[#282828] inline-flex items-center gap-1 no-underline"
-              >
-                FWA <ExternalLink className="w-2.5 h-2.5 text-[#FA3600]" />
-              </a>
+                <span
+                  className="inline-block w-2 h-2 rounded-full"
+                  style={{
+                    backgroundColor: bridgeStat.deviceReady ? '#15803D' : '#FA3600',
+                  }}
+                />
+                {nanoWarmPct !== null
+                  ? `NANO ${nanoWarmPct}%`
+                  : bridgeStat.deviceReady
+                    ? 'NANO 4 READY'
+                    : 'WARM NANO 4'}
+              </button>
             </div>
           </div>
 
-          {/* Scenario Blueprint Sheet Switcher */}
+          {/* Scenario Blueprint Sheet Switcher (+04 CUSTOM added cleanly on single row) */}
           <nav
             aria-label="Blueprint Scenario Sheets"
-            className="lg:col-span-4 px-3 py-2 border-b lg:border-b-0 lg:border-r border-[#D4D2CA] flex items-center gap-1.5 flex-wrap"
+            className="lg:col-span-4 px-2.5 py-2 border-b lg:border-b-0 lg:border-r border-[#D4D2CA] flex items-center gap-1 flex-wrap xl:flex-nowrap"
           >
             {(
               [
-                { id: 'typhoon-cpap', code: '[01]', short: 'TYPHOON 36H' },
-                { id: 'singles-day-cutover', code: '[02]', short: 'SRE CUTOVER' },
-                { id: 'expat-cashflow', code: '[03]', short: 'EXPAT RUNWAY' },
+                { id: 'typhoon-cpap', code: '[01]', short: 'TYPHOON' },
+                { id: 'singles-day-cutover', code: '[02]', short: 'CUTOVER' },
+                { id: 'expat-cashflow', code: '[03]', short: 'RUNWAY' },
               ] as const
             ).map((tab) => {
-              const active = scenarioId === tab.id;
+              const active = scenario.id === tab.id;
               return (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => handleSelectScenario(tab.id)}
-                  className="heron-mono text-[10px] font-bold px-2 py-1.5 border transition-colors cursor-pointer whitespace-nowrap"
+                  className="heron-mono text-[9.5px] font-bold px-1.5 py-1.5 border transition-colors cursor-pointer whitespace-nowrap"
                   style={{
                     backgroundColor: active ? '#282828' : '#F6F4EE',
                     borderColor: active ? '#282828' : '#D4D2CA',
                     color: active ? '#F6F4EE' : '#282828',
                   }}
                 >
-                  <span style={{ color: active ? '#FF7A52' : '#575652' }} className="mr-1">
+                  <span style={{ color: active ? '#FF7A52' : '#575652' }} className="mr-0.5">
                     {tab.code}
                   </span>
                   {tab.short}
                 </button>
               );
             })}
+
+            <button
+              type="button"
+              onClick={() => {
+                if (customScenario && scenario.id !== customScenario.id) {
+                  setScenarioId(customScenario.id);
+                } else {
+                  setCustomScanOpen(true);
+                }
+              }}
+              className="heron-mono text-[9.5px] font-bold px-1.5 py-1.5 border transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1"
+              style={{
+                backgroundColor: Boolean(scenario.customEnvelope) ? '#282828' : '#FAF9F5',
+                borderColor: '#282828',
+                color: Boolean(scenario.customEnvelope) ? '#F6F4EE' : '#282828',
+              }}
+            >
+              <Camera className="w-3 h-3 text-[#FA3600]" />
+              <span>[+04] CUSTOM</span>
+            </button>
           </nav>
 
           {/* Hybrid Utility Action Strip + [EXPORT CAD AUDIT .ZIP] */}
@@ -414,24 +673,33 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
                 </div>
               </div>
               <div className="text-right">
-                <div className="heron-mono text-[9.5px] text-[#575652]">NANO LINEAR EST</div>
-                <div className="heron-mono text-base font-bold text-[#282828]">
-                  {snapshot.localMargin > 0 ? '+' : ''}
-                  {snapshot.localMargin} {scenario.marginUnit}
+                <div className="heron-mono text-[9.5px] text-[#575652]">WORST-10% P10 STORM</div>
+                <div
+                  className="heron-mono text-base font-bold"
+                  style={{ color: surrogateEnvelope.p10Margin >= 0 ? '#136B33' : '#B82500' }}
+                >
+                  {surrogateEnvelope.p10Margin > 0 ? '+' : ''}
+                  {surrogateEnvelope.p10Margin.toFixed(1)} {scenario.marginUnit}
                 </div>
               </div>
             </div>
 
             <div className="heron-mono text-[10px] text-[#575652] flex items-center justify-between">
-              <span>VORONOI CAD + FFLATE ZIP BUNDLE</span>
-              <span className="font-bold text-[#282828]">READY</span>
+              <span>BUCKINGHAM-Π + 2,000-MC FAN</span>
+              <span className="font-bold text-[#282828]">
+                {surrogateEnvelope.status === 'CALIBRATED_IN_TRUST_REGION'
+                  ? 'IN TRUST REGION'
+                  : surrogateEnvelope.status === 'PATCH_PREVIEW_NEEDS_CLOUD_VERIFY'
+                    ? 'PATCH PREVIEW'
+                    : 'EPISTEMIC WIDENED'}
+              </span>
             </div>
           </div>
         </section>
 
         {/* Centerpiece Interactive Architectural Elevation Blueprint + Drag-Box Violation Finder */}
         <HeronBlueprintStage
-          scenarioId={scenarioId}
+          scenarioId={scenario.id}
           scenario={scenario}
           paramValues={paramValues}
           toggleValues={toggleValues}
@@ -439,6 +707,7 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
           onToggleMitigation={handleToggleMitigation}
           onApproveMitigationFix={handleApproveMitigationFix}
           onResetDefaults={handleResetDefaults}
+          minimalRepairButtonLabel={minimalRepairButtonLabel}
         />
 
         {/* Lower Split Grid: Tangle Specification + Piecewise Proof Stamp (Left) | Voronoi Simplex Plot (Right) */}
@@ -456,6 +725,8 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
               inspectedStepFrac={inspectedStepFrac}
               onSelectStepFrac={(f) => setInspectedStepFrac(f)}
               onExportCadZip={() => void handleExportCadZip()}
+              onOpenCustomScan={() => setCustomScanOpen(true)}
+              minimalRepairButtonLabel={minimalRepairButtonLabel}
             />
           </div>
           <div className="lg:col-span-6">
@@ -463,8 +734,11 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
               scenario={scenario}
               paramValues={paramValues}
               snapshot={snapshot}
+              surrogateEnvelope={surrogateEnvelope}
+              minimalRepairPlan={minimalRepairPlan}
+              cloudProvenanceLabel={cloudProvenanceLabel}
               isCalibrating={isCalibrating}
-              onRunCloudCalibration={handleRunCloudCalibration}
+              onRunCloudCalibration={() => void handleRunCloudCalibration()}
               inspectedStepFrac={inspectedStepFrac}
               onSelectStepFrac={(f) => setInspectedStepFrac(f)}
             />
@@ -476,16 +750,41 @@ ${snapshot.discoveredInvariants.map((inv, idx) => `${idx + 1}. ${inv}`).join('\n
       </div>
 
       {/* Modals & Companion Drawers */}
+      <CustomScanModal
+        open={customScanOpen}
+        onClose={() => setCustomScanOpen(false)}
+        privacyLock={scenario.defaultPrivacyLock}
+        initialProse={mv3SelectionProse}
+        onAdoptScenario={handleAdoptCustomScenario}
+      />
       <HeronPrivacyAirlockModal
         open={privacyOpen}
         onClose={() => setPrivacyOpen(false)}
         scenario={scenario}
         paramValues={paramValues}
+        toggleValues={toggleValues}
+        privateNote={activePrivateNote}
+        onChangePrivateNote={(next) =>
+          setPrivateNotes((prev) => ({ ...prev, [scenario.id]: next }))
+        }
+        onApplyExtractedCurrencyRatios={(ratios) => {
+          setParamValues((prev) => ({
+            ...prev,
+            ...(ratios.reserveMonths !== undefined
+              ? { reserveMonths: Math.max(4, Math.min(24, Math.round(ratios.reserveMonths))) }
+              : {}),
+            ...(ratios.housingRatioPct !== undefined
+              ? { housingRatioPct: Math.max(20, Math.min(65, Math.round(ratios.housingRatioPct))) }
+              : {}),
+          }));
+        }}
       />
       <HeronOfflineQrModal
         open={qrOpen}
         onClose={() => setQrOpen(false)}
         scenario={scenario}
+        paramValues={paramValues}
+        toggleValues={toggleValues}
         snapshot={snapshot}
       />
       <HeronIphoneFaultPadDrawer

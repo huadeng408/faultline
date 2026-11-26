@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react';
 import { Switch } from '@base-ui/react/switch';
-import { CheckCheck, Download, RotateCcw, ShieldAlert, Sliders, Sparkles } from 'lucide-react';
+import { Camera, CheckCheck, Download, RotateCcw, ShieldAlert, Sliders, Sparkles } from 'lucide-react';
 import type {
   ScenarioDefinition,
   ScrubParam,
@@ -121,6 +121,33 @@ export function buildPiecewiseProofSchedule(
     ];
   }
 
+  if (scenario.customEnvelope) {
+    const env = scenario.customEnvelope;
+    const hor = paramValues.horizonValue ?? env.horizonValue;
+    const u = scenario.axisXUnit;
+    return [0.25, 0.5, 0.75, 1.0].map((frac, idx) => {
+      const t0 = Math.round((frac - 0.25) * hor);
+      const t1 = Math.round(frac * hor);
+      const pct = at(frac);
+      return {
+        id: `pw-0${idx + 1}`,
+        windowLabel: `T+${t0}${u} → T+${t1}${u}`,
+        regimeName:
+          idx === 0
+            ? 'I. Startup & Coincident Surge'
+            : idx === 1
+              ? 'II. Mid-Window Duty Envelope'
+              : idx === 2
+                ? 'III. Cumulative Drift / Recharge'
+                : 'IV. Terminal Covenant Verification',
+        formulaExpr: `Reserve_t ≥ ${env.safetyFloorPct}% Floor`,
+        endReservePct: pct,
+        frac,
+        passed: idx === 3 ? snapshot.isSafe : pct >= env.safetyFloorPct,
+      };
+    });
+  }
+
   const effLag = Math.max(0.5, (paramValues.relocOneOffMos ?? 3.5) - (toggleValues.staggerMove ? 1.4 : 0));
   const effFx = toggleValues.fxForwardCap ? (paramValues.fxShockPct ?? 16) * 0.4 : paramValues.fxShockPct ?? 16;
   const effBps = toggleValues.rateCapClause ? Math.min(paramValues.rateHikeBps ?? 225, 75) : paramValues.rateHikeBps ?? 225;
@@ -176,6 +203,8 @@ interface HeronTangleSpecProps {
   inspectedStepFrac: number | null;
   onSelectStepFrac: (frac: number) => void;
   onExportCadZip: () => void;
+  onOpenCustomScan?: () => void;
+  minimalRepairButtonLabel?: string;
 }
 
 export const HeronTangleSpec: React.FC<HeronTangleSpecProps> = ({
@@ -190,6 +219,8 @@ export const HeronTangleSpec: React.FC<HeronTangleSpecProps> = ({
   inspectedStepFrac,
   onSelectStepFrac,
   onExportCadZip,
+  onOpenCustomScan,
+  minimalRepairButtonLabel,
 }) => {
   const [selectedParamKey, setSelectedParamKey] = useState<string | null>(null);
   const dragRef = useRef<{
@@ -269,14 +300,26 @@ export const HeronTangleSpec: React.FC<HeronTangleSpecProps> = ({
             </span>
           </div>
 
-          <button
-            type="button"
-            onClick={onResetDefaults}
-            className="heron-mono text-[10px] font-semibold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828] hover:bg-[#282828] hover:text-[#F6F4EE] transition-colors cursor-pointer flex items-center gap-1"
-          >
-            <RotateCcw className="w-3 h-3" />
-            [RESET]
-          </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {onOpenCustomScan && (
+              <button
+                type="button"
+                onClick={onOpenCustomScan}
+                className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#282828] text-[#F6F4EE] hover:bg-[#FA3600] hover:border-[#FA3600] transition-colors cursor-pointer flex items-center gap-1"
+              >
+                <Camera className="w-3 h-3 text-[#FF7A52]" />
+                [EDIT / SCAN]
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={onResetDefaults}
+              className="heron-mono text-[10px] font-semibold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828] hover:bg-[#282828] hover:text-[#F6F4EE] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <RotateCcw className="w-3 h-3" />
+              [RESET]
+            </button>
+          </div>
         </div>
 
         {/* Prose Clauses §1 - §3 */}
@@ -294,7 +337,9 @@ export const HeronTangleSpec: React.FC<HeronTangleSpecProps> = ({
                   </span>
                   {hasConflict ? (
                     <span className="heron-mono text-[9.5px] font-bold px-1.5 py-0.5 bg-[#282828] text-[#F6F4EE] border-l-4 border-l-[#FA3600]">
-                      VIOLATION · {relatedConflicts[0].localLatencyMs}MS NANO
+                      {relatedConflicts[0].localLatencyMs > 0
+                        ? `VIOLATION · ${relatedConflicts[0].localLatencyMs}MS ${(relatedConflicts[0].provenance ?? 'ON_DEVICE').toUpperCase()}`
+                        : 'VIOLATION · DETERMINISTIC'}
                     </span>
                   ) : (
                     <span className="heron-mono text-[9.5px] font-bold px-1.5 py-0.5 bg-[#15803D] text-[#FFFFFF]">
@@ -386,16 +431,34 @@ export const HeronTangleSpec: React.FC<HeronTangleSpecProps> = ({
               </button>
             </div>
             <p className="text-[11px] text-[#575652] m-0">{selectedParam.description}</p>
-            <input
-              type="range"
-              min={selectedParam.min}
-              max={selectedParam.max}
-              step={selectedParam.step}
-              value={selectedVal}
-              onChange={(e) => onScrubParam(selectedParam.key, Number(e.target.value))}
-              aria-label={selectedParam.label}
-              className="w-full accent-[#FA3600] cursor-pointer"
-            />
+            <div className="flex items-center gap-2.5">
+              <input
+                type="range"
+                min={selectedParam.min}
+                max={selectedParam.max}
+                step={selectedParam.step}
+                value={selectedVal}
+                onChange={(e) => onScrubParam(selectedParam.key, Number(e.target.value))}
+                aria-label={selectedParam.label}
+                className="flex-1 accent-[#FA3600] cursor-pointer"
+              />
+              <input
+                type="number"
+                min={selectedParam.min}
+                max={selectedParam.max}
+                step={selectedParam.step}
+                value={selectedVal}
+                onChange={(e) => {
+                  const nVal = Number(e.target.value);
+                  if (Number.isFinite(nVal)) {
+                    const clamped = Math.max(selectedParam.min, Math.min(selectedParam.max, nVal));
+                    onScrubParam(selectedParam.key, clamped);
+                  }
+                }}
+                aria-label={`${selectedParam.label} exact numeric value`}
+                className="w-24 px-2 py-1 border border-[#282828] bg-[#FAF9F5] heron-mono text-xs font-bold text-[#282828]"
+              />
+            </div>
           </div>
         )}
       </div>
@@ -483,7 +546,7 @@ export const HeronTangleSpec: React.FC<HeronTangleSpecProps> = ({
               className="heron-mono text-[10px] font-bold px-2.5 py-1 bg-[#282828] text-[#F6F4EE] hover:bg-[#136B33] transition-colors cursor-pointer flex items-center gap-1"
             >
               <Sparkles className="w-3 h-3 text-[#FA3600]" />
-              [ENGAGE ALL FIXES]
+              [{minimalRepairButtonLabel ?? 'ENGAGE PARETO MIN-FIX'}]
             </button>
           )}
         </div>

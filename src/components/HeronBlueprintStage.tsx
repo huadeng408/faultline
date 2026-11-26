@@ -35,6 +35,7 @@ interface HeronBlueprintStageProps {
   onToggleMitigation: (key: string, nextVal: boolean) => void;
   onApproveMitigationFix: () => void;
   onResetDefaults: () => void;
+  minimalRepairButtonLabel?: string;
 }
 
 const SVG_W = 1240;
@@ -49,6 +50,7 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
   onToggleMitigation,
   onApproveMitigationFix,
   onResetDefaults,
+  minimalRepairButtonLabel,
 }) => {
   const stageRef = useRef<HTMLDivElement | null>(null);
   const maskCircleRef = useRef<SVGCircleElement | null>(null);
@@ -193,6 +195,40 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
       ];
     }
 
+    if (scenario.customEnvelope) {
+      const env = scenario.customEnvelope;
+      const cap = paramValues.capacityValue ?? env.capacityValue;
+      const firstToggle = scenario.toggles[0]?.key ?? '';
+      const secondToggle = scenario.toggles[1]?.key ?? firstToggle;
+      return env.loads.slice(0, 3).map((ld, idx) => {
+        const val = paramValues[`load_${ld.id}`] ?? ld.value;
+        const tgKey = ld.mitigationLabel ? `mit_${ld.id}` : idx === 0 ? firstToggle : secondToggle;
+        const isOn = tgKey ? Boolean(toggleValues[tgKey]) : false;
+        return {
+          id: `hs-${idx + 1}`,
+          codeTag: `CUS-0${idx + 1}`,
+          clausePair: `CLAUSE §1↔§2`,
+          zoneLabel: `BUS NODE 0${idx + 1} · ${ld.polarity.toUpperCase()}`,
+          cx: idx === 0 ? 488 : idx === 1 ? 696 : 864,
+          cy: idx === 0 ? 144 : idx === 1 ? 152 : 254,
+          side: idx === 0 ? ('left' as const) : ('right' as const),
+          slotIdx: idx <= 1 ? 0 : 1,
+          activeWhenUnsafe: ld.polarity === 'drain' && !isOn,
+          title: `${ld.label.toUpperCase()} (${val} ${ld.unit}) VS ${cap} ${env.capacityUnit}`,
+          detail:
+            ld.polarity === 'recharge'
+              ? `Periodic inflow restores reserve against ${env.safetyFloorPct}% covenant floor.`
+              : `Active ${ld.window.kind} load stresses ${cap} ${env.capacityUnit} ${env.archetype.replace('_', ' ')} envelope.`,
+          toggleKey: tgKey,
+          fixActionLabel: tgKey
+            ? isOn
+              ? 'PATCH ENGAGED'
+              : (ld.mitigationLabel?.toUpperCase() ?? 'ENGAGE PATCH')
+            : 'PARETO SIZE FIX',
+        };
+      });
+    }
+
     const resMos = paramValues.reserveMonths ?? 11;
     const housing = paramValues.housingRatioPct ?? 42;
     const fx = paramValues.fxShockPct ?? 16;
@@ -247,7 +283,7 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
         fixActionLabel: toggleValues.rateCapClause ? '3YR FIXED CAP ACTIVE' : 'CAP RATE AT +75BPS',
       },
     ];
-  }, [scenarioId, paramValues, toggleValues, snapshot.cloudMargin]);
+  }, [scenarioId, scenario.customEnvelope, scenario.toggles, paramValues, toggleValues, snapshot.cloudMargin]);
 
   const checkIntersections = (rect: MarqueeRect, containerRect: DOMRect) => {
     const x1 = Math.min(rect.startX, rect.curX);
@@ -326,7 +362,13 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
   };
 
   const sheetIndex =
-    scenarioId === 'typhoon-cpap' ? '01/03' : scenarioId === 'singles-day-cutover' ? '02/03' : '03/03';
+    scenarioId === 'typhoon-cpap'
+      ? '01/04'
+      : scenarioId === 'singles-day-cutover'
+        ? '02/04'
+        : scenarioId === 'expat-cashflow'
+          ? '03/04'
+          : '04/04';
 
   return (
     <section
@@ -365,7 +407,7 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
               className="heron-mono text-[10px] font-bold px-3 py-1 bg-[#282828] text-[#F6F4EE] border border-[#282828] hover:bg-[#FA3600] hover:border-[#FA3600] transition-colors cursor-pointer flex items-center gap-1.5"
             >
               <Sparkles className="w-3.5 h-3.5 text-[#FA3600]" />
-              APPROVE MITIGATION FIX
+              {minimalRepairButtonLabel ?? 'APPROVE MINIMAL-FIX REPAIR'}
             </button>
           ) : (
             <button
@@ -462,7 +504,9 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
                 ? 'SECTION A—A\u2032 · 8,400 MM RESIDENTIAL POWER ELEVATION'
                 : scenarioId === 'singles-day-cutover'
                   ? 'SECTION B—B\u2032 · MULTI-REGION PAYMENT DRAIN & PGBOUNCER'
-                  : 'SECTION C—C\u2032 · PRIVACY-LOCKED CROSS-BORDER COVENANT SLAB'}
+                  : scenario.customEnvelope
+                    ? `SECTION D—D\u2032 · ${scenario.customEnvelope.archetype.toUpperCase().replace('_', ' ')} ENVELOPE SCHEMATIC`
+                    : 'SECTION C—C\u2032 · PRIVACY-LOCKED CROSS-BORDER COVENANT SLAB'}
             </text>
           </g>
 
@@ -730,6 +774,94 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
             </g>
           )}
 
+          {/* SCENARIO 4 (+04 CUSTOM): Open-Domain Section D-D' 3-Stage Envelope Bus */}
+          {Boolean(scenario.customEnvelope) && scenario.customEnvelope && (
+            <g>
+              <rect x="335" y="72" width="570" height="270" fill="#FAF9F5" stroke="#282828" strokeWidth="1.8" />
+              <line x1="518" y1="72" x2="518" y2="342" stroke="#282828" strokeWidth="1.2" strokeDasharray="5 4" />
+              <line x1="712" y1="72" x2="712" y2="342" stroke="#282828" strokeWidth="1.2" strokeDasharray="5 4" />
+
+              <text x="350" y="94" fill="#282828" fontSize="9" fontWeight="700" className="heron-mono">
+                01 SOURCE CEILING
+              </text>
+              <text x="532" y="94" fill="#282828" fontSize="9" fontWeight="700" className="heron-mono">
+                02 {scenario.customEnvelope.archetype === 'queue_backpressure' ? 'QUEUE BACKLOG BUS' : 'COINCIDENT BUS'}
+              </text>
+              <text x="726" y="94" fill="#282828" fontSize="9" fontWeight="700" className="heron-mono">
+                03 ACTIVE FLOWS
+              </text>
+
+              <rect x="354" y="136" width="144" height="128" fill="#EFECE4" stroke="#282828" strokeWidth="1.6" />
+              <text x="426" y="166" textAnchor="middle" fill="#282828" fontSize="9" fontWeight="700" className="heron-mono">
+                PRIMARY ENVELOPE
+              </text>
+              <text x="426" y="192" textAnchor="middle" fill="#282828" fontSize="11" fontWeight="700" className="heron-mono">
+                {paramValues.capacityValue ?? scenario.customEnvelope.capacityValue} {scenario.customEnvelope.capacityUnit}
+              </text>
+              <text x="426" y="216" textAnchor="middle" fill="#575652" fontSize="8.5" className="heron-mono">
+                FLOOR: {scenario.customEnvelope.safetyFloorPct}%
+              </text>
+
+              <rect x="542" y="148" width="146" height="104" fill="#EFECE4" stroke="#282828" strokeWidth="1.6" />
+              <text x="615" y="178" textAnchor="middle" fill="#282828" fontSize="8.5" fontWeight="700" className="heron-mono">
+                {scenario.customEnvelope.archetype.toUpperCase().replace('_', ' ')}
+              </text>
+              <text x="615" y="200" textAnchor="middle" fill="#575652" fontSize="8.5" className="heron-mono">
+                MARGIN: {snapshot.cloudMargin >= 0 ? '+' : ''}{snapshot.cloudMargin} {scenario.marginUnit}
+              </text>
+              <text x="615" y="220" textAnchor="middle" fill="#282828" fontSize="8" className="heron-mono">
+                BUCKINGHAM-Π LOCKED
+              </text>
+
+              {scenario.customEnvelope.loads.slice(0, 3).map((ld, idx) => {
+                const yTop = 114 + idx * 72;
+                const val = paramValues[`load_${ld.id}`] ?? ld.value;
+                return (
+                  <g key={ld.id}>
+                    <rect
+                      x="730"
+                      y={yTop}
+                      width="156"
+                      height="56"
+                      fill={ld.polarity === 'recharge' ? '#ECFDF5' : '#EFECE4'}
+                      stroke="#282828"
+                      strokeWidth="1.4"
+                    />
+                    <text x="808" y={yTop + 22} textAnchor="middle" fill="#282828" fontSize="8" fontWeight="700" className="heron-mono">
+                      {ld.label.slice(0, 20).toUpperCase()}
+                    </text>
+                    <text x="808" y={yTop + 40} textAnchor="middle" fill="#575652" fontSize="8" className="heron-mono">
+                      {ld.polarity === 'recharge' ? '+' : '-'}{val} {ld.unit} ({ld.window.kind})
+                    </text>
+                  </g>
+                );
+              })}
+
+              <g stroke="#FA3600" strokeWidth="2.4" fill="none" className="heron-dash-flow">
+                <path d="M 498 200 L 542 200" />
+                {scenario.customEnvelope.loads.slice(0, 3).map((ld, idx) => (
+                  <path
+                    key={`fault-wire-${ld.id}`}
+                    d={`M 688 ${184 + idx * 16} L 730 ${142 + idx * 72}`}
+                  />
+                ))}
+              </g>
+
+              <g mask="url(#heron-ink-seep-mask)">
+                <rect x="335" y="72" width="570" height="270" fill="rgba(21, 128, 61, 0.05)" />
+                <g stroke="#15803D" strokeWidth="2.8" fill="none">
+                  <path d="M 498 200 L 542 200" />
+                  {scenario.customEnvelope.loads.slice(0, 3).map((ld, idx) => (
+                    <path
+                      key={`safe-wire-${ld.id}`}
+                      d={`M 688 ${184 + idx * 16} L 730 ${142 + idx * 72}`}
+                    />
+                  ))}
+                </g>
+              </g>
+            </g>
+          )}
+
           {/* Interactive Blueprint Hotspot Nodes */}
           {hotspots.map((hs) => {
             const isResolved = !hs.activeWhenUnsafe || snapshot.isSafe;
@@ -840,7 +972,11 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
                       </span>
                       <button
                         type="button"
-                        onClick={() => onToggleMitigation(hs.toggleKey, !toggleValues[hs.toggleKey])}
+                        onClick={() =>
+                          hs.toggleKey
+                            ? onToggleMitigation(hs.toggleKey, !toggleValues[hs.toggleKey])
+                            : onApproveMitigationFix()
+                        }
                         className="heron-mono text-[9px] font-bold px-2 py-0.5 border cursor-pointer shrink-0 transition-colors"
                         style={{
                           backgroundColor: toggleValues[hs.toggleKey] ? '#15803D' : '#282828',
@@ -888,7 +1024,11 @@ export const HeronBlueprintStage: React.FC<HeronBlueprintStageProps> = ({
               <p className="text-[11px] text-[#575652] m-0 leading-snug">{hs.detail}</p>
               <button
                 type="button"
-                onClick={() => onToggleMitigation(hs.toggleKey, !toggleValues[hs.toggleKey])}
+                onClick={() =>
+                  hs.toggleKey
+                    ? onToggleMitigation(hs.toggleKey, !toggleValues[hs.toggleKey])
+                    : onApproveMitigationFix()
+                }
                 className="mt-1 self-start heron-mono text-[10px] font-bold px-2.5 py-1 bg-[#282828] text-[#F6F4EE] cursor-pointer"
               >
                 [{hs.fixActionLabel}]

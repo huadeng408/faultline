@@ -1,6 +1,6 @@
 import React, { useRef } from 'react';
 import gsap from 'gsap';
-import { ExternalLink } from 'lucide-react';
+import { ShieldCheck } from 'lucide-react';
 
 export const HeronFooterInkWordmark: React.FC = () => {
   const blotRef = useRef<SVGCircleElement | null>(null);
@@ -149,31 +149,16 @@ export const HeronFooterInkWordmark: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <span className="heron-mono text-[10px] text-[#575652]">1:1 ARCHITECTURAL HOMAGE:</span>
-          <a
-            href="https://www.awwwards.com/sites/heron-ai"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828] hover:bg-[#282828] hover:text-[#F6F4EE] inline-flex items-center gap-1 no-underline"
-          >
-            AWWWARDS SOTD <ExternalLink className="w-2.5 h-2.5" />
-          </a>
-          <a
-            href="https://legacy.thefwa.com/cases/heronai"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828] hover:bg-[#282828] hover:text-[#F6F4EE] inline-flex items-center gap-1 no-underline"
-          >
-            THE FWA FOTD <ExternalLink className="w-2.5 h-2.5" />
-          </a>
-          <a
-            href="https://heronaiapp.com/"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828] hover:bg-[#282828] hover:text-[#F6F4EE] inline-flex items-center gap-1 no-underline"
-          >
-            HERONAIAPP.COM <ExternalLink className="w-2.5 h-2.5" />
-          </a>
+          <span className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828] inline-flex items-center gap-1">
+            <ShieldCheck className="w-3 h-3 text-[#15803D]" />
+            BUCKINGHAM-Π ZERO-PII AIRLOCK
+          </span>
+          <span className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828]">
+            @FIREBASE/AI@3.1.0 VERIFIED
+          </span>
+          <span className="heron-mono text-[10px] font-bold px-2 py-0.5 border border-[#282828] bg-[#FAF9F5] text-[#282828]">
+            APACHE-2.0 OPEN SOURCE
+          </span>
         </div>
       </div>
     </footer>

@@ -5,11 +5,16 @@ import { scaleLinear } from 'd3-scale';
 import { Delaunay } from 'd3-delaunay';
 import { Code2, Crosshair, Play, Terminal } from 'lucide-react';
 import type { ScenarioDefinition, SimulationSnapshot } from '../core/faultlineEngine';
+import type { EvaluatedSurrogateEnvelope } from '../core/monteCarloSurrogate';
+import type { MinimalRepairPlan } from '../core/minimalRepairSolver';
 
 interface SimplexDraftingChartProps {
   scenario: ScenarioDefinition;
   paramValues: Record<string, number>;
   snapshot: SimulationSnapshot;
+  surrogateEnvelope?: EvaluatedSurrogateEnvelope;
+  minimalRepairPlan?: MinimalRepairPlan;
+  cloudProvenanceLabel?: string;
   isCalibrating: boolean;
   onRunCloudCalibration: () => void;
   inspectedStepFrac: number | null;
@@ -48,6 +53,9 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
   scenario,
   paramValues,
   snapshot,
+  surrogateEnvelope,
+  minimalRepairPlan,
+  cloudProvenanceLabel = '2,000-MC SURROGATE',
   isCalibrating,
   onRunCloudCalibration,
   inspectedStepFrac,
@@ -62,6 +70,9 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
     localPath,
     cloudPath,
     driftAreaPath,
+    stormFanPath,
+    stormP10Path,
+    minimalFixPath,
     xScale,
     yScale,
     floorY,
@@ -87,8 +98,20 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
       .y1((v) => yS(v))
       .curve(curveMonotoneX);
 
+    const mkStormFan = area<number>()
+      .x((_, i) => xS(i))
+      .y0((_, i) => yS(surrogateEnvelope?.p10Display[i] ?? snapshot.cloudSeries[i] ?? 0))
+      .y1((v) => yS(v))
+      .curve(curveMonotoneX);
+
     const safetyPct =
-      scenario.id === 'singles-day-cutover' ? 15 : scenario.id === 'expat-cashflow' ? 18.75 : 10;
+      scenario.id === 'singles-day-cutover'
+        ? 15
+        : scenario.id === 'expat-cashflow'
+          ? 18.75
+          : scenario.customEnvelope
+            ? scenario.customEnvelope.safetyFloorPct
+            : 10;
 
     // Construct dense quarter-step (15-min / sub-interval) 2D CAD nodes for d3-delaunay Voronoi snapping
     const totalSubSteps = 72; // every 30 minutes on 36h window (73 timestamps x 2 curves = 146 Voronoi sites)
@@ -96,19 +119,25 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
     const totalHorizon =
       scenario.id === 'typhoon-cpap'
         ? paramValues.outageHours ?? 36
-        : 36;
+        : scenario.customEnvelope
+          ? paramValues.horizonValue ?? scenario.customEnvelope.horizonValue
+          : 36;
     const baseCap =
       scenario.id === 'typhoon-cpap'
         ? paramValues.batteryWh ?? 1024
         : scenario.id === 'singles-day-cutover'
           ? paramValues.dbPoolMax ?? 480
-          : 16;
+          : scenario.customEnvelope
+            ? paramValues.capacityValue ?? scenario.customEnvelope.capacityValue
+            : 16;
     const absUnit =
       scenario.id === 'typhoon-cpap'
         ? 'Wh'
         : scenario.id === 'singles-day-cutover'
           ? 'conns'
-          : 'mos';
+          : scenario.customEnvelope
+            ? scenario.customEnvelope.capacityUnit
+            : 'mos';
 
     for (let s = 0; s <= totalSubSteps; s++) {
       const frac = s / totalSubSteps;
@@ -130,6 +159,8 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
         const mm = Math.floor(totalSecs / 60);
         const ss = totalSecs % 60;
         timeStampLabel = `T+${String(mm).padStart(2, '0')}m ${String(ss).padStart(2, '0')}s`;
+      } else if (scenario.customEnvelope) {
+        timeStampLabel = `T+${(frac * totalHorizon).toFixed(1)}${scenario.axisXUnit}`;
       } else {
         const moFloat = frac * 36;
         const mo = Math.floor(moFloat);
@@ -188,6 +219,12 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
       localPath: mkLine(snapshot.localSeries) || '',
       cloudPath: mkLine(snapshot.cloudSeries) || '',
       driftAreaPath: mkArea(snapshot.cloudSeries) || '',
+      stormFanPath: surrogateEnvelope ? mkStormFan(surrogateEnvelope.p90Display) || '' : '',
+      stormP10Path: surrogateEnvelope ? mkLine(surrogateEnvelope.p10Display) || '' : '',
+      minimalFixPath:
+        !snapshot.isSafe && minimalRepairPlan?.repairedCloudSeries?.length
+          ? mkLine(minimalRepairPlan.repairedCloudSeries) || ''
+          : '',
       xScale: xS,
       yScale: yS,
       floorY: yS(safetyPct),
@@ -195,7 +232,18 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
       voronoiObj: { delaunay, voronoi },
       sampleNodes: nodes,
     };
-  }, [n, snapshot.localSeries, snapshot.cloudSeries, scenario.id, paramValues]);
+  }, [
+    n,
+    snapshot.localSeries,
+    snapshot.cloudSeries,
+    snapshot.isSafe,
+    scenario.id,
+    scenario.axisXUnit,
+    scenario.customEnvelope,
+    paramValues,
+    surrogateEnvelope,
+    minimalRepairPlan,
+  ]);
 
   // Resolve active node either from external Piecewise Proof click or from d3-delaunay Voronoi hover
   const activeNode: VoronoiSampleNode = useMemo(() => {
@@ -260,7 +308,7 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
       <div className="grid grid-cols-3 border-b border-[#D4D2CA] bg-[#FAF9F5]">
         <div className="p-3 border-r border-[#D4D2CA]">
           <div className="heron-mono text-[10px] text-[#575652] uppercase">
-            [ON_DEVICE · 0.28S]
+            [NOMINAL LINEAR · &lt;1MS]
           </div>
           <div className="mt-1 heron-mono text-xl font-bold text-[#282828] flex items-baseline gap-1">
             <span>{snapshot.localMargin > 0 ? '+' : ''}</span>
@@ -273,8 +321,8 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
         </div>
 
         <div className="p-3 border-r border-[#D4D2CA]">
-          <div className="heron-mono text-[10px] text-[#575652] uppercase">
-            [CLOUD PYTHON · 3.0S]
+          <div className="heron-mono text-[10px] text-[#575652] uppercase truncate">
+            [{cloudProvenanceLabel}]
           </div>
           <div
             className="mt-1 heron-mono text-xl font-bold flex items-baseline gap-1"
@@ -287,6 +335,12 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
             />
             <span className="text-[11px] font-normal text-[#575652]">{scenario.marginUnit}</span>
           </div>
+          {surrogateEnvelope && (
+            <div className="heron-mono text-[9px] text-[#575652] mt-0.5 truncate">
+              WORST-10% P10: {surrogateEnvelope.p10Margin > 0 ? '+' : ''}
+              {surrogateEnvelope.p10Margin.toFixed(1)} {scenario.marginUnit}
+            </div>
+          )}
         </div>
 
         <div className="p-3">
@@ -301,6 +355,11 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
             />
             <span className="text-[11px] font-normal text-[#575652]">{scenario.marginUnit}</span>
           </div>
+          {surrogateEnvelope && (
+            <div className="heron-mono text-[9px] text-[#575652] mt-0.5 truncate">
+              TRUST w_TR={surrogateEnvelope.trustWeight.toFixed(2)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -401,8 +460,38 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
           {/* Divergence Shaded Band */}
           <path
             d={driftAreaPath}
-            fill={snapshot.isSafe ? 'rgba(21, 128, 61, 0.12)' : 'rgba(250, 54, 0, 0.14)'}
+            fill={snapshot.isSafe ? 'rgba(21, 128, 61, 0.08)' : 'rgba(250, 54, 0, 0.09)'}
           />
+
+          {/* 2,000-Trajectory Monte Carlo P10-P90 Storm Risk Envelope Fan */}
+          {stormFanPath && (
+            <path
+              d={stormFanPath}
+              fill={snapshot.isSafe ? 'rgba(21, 128, 61, 0.16)' : 'rgba(250, 54, 0, 0.19)'}
+              stroke="none"
+            />
+          )}
+          {stormP10Path && (
+            <path
+              d={stormP10Path}
+              fill="none"
+              stroke={snapshot.isSafe ? '#15803D' : '#B82500'}
+              strokeWidth="1.15"
+              strokeDasharray="2 2.5"
+              strokeOpacity="0.82"
+            />
+          )}
+
+          {/* Pareto Minimal-Fix Repaired Fork Preview Curve */}
+          {minimalFixPath && (
+            <path
+              d={minimalFixPath}
+              fill="none"
+              stroke="#15803D"
+              strokeWidth="2.1"
+              strokeDasharray="6 3"
+            />
+          )}
 
           {/* 0.28s Local Optimistic Dashed Line */}
           <path
@@ -519,18 +608,34 @@ export const SimplexDraftingChart: React.FC<SimplexDraftingChartProps> = ({
           ))}
         </svg>
 
-        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 heron-mono text-[10px] text-[#575652]">
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2 heron-mono text-[9.5px] text-[#575652]">
           <span className="flex items-center gap-1.5">
-            <span className="inline-block w-4 border-t-2 border-dashed border-[#282828]" />
-            0.28S ON-DEVICE LINEAR ESTIMATE
+            <span className="inline-block w-3.5 border-t-2 border-dashed border-[#282828]" />
+            NAIVE LINEAR EST
           </span>
           <span className="flex items-center gap-1.5">
             <span
-              className="inline-block w-4 h-[3px]"
+              className="inline-block w-3.5 h-[3px]"
               style={{ backgroundColor: cloudStroke }}
             />
-            3.0S CLOUD PYTHON NON-LINEAR SOLVER
+            NON-LINEAR SOLVER
           </span>
+          <span className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-3.5 h-2.5 border"
+              style={{
+                backgroundColor: snapshot.isSafe ? 'rgba(21,128,61,0.22)' : 'rgba(250,54,0,0.24)',
+                borderColor: cloudStroke,
+              }}
+            />
+            2,000-MC P10–P90 FAN
+          </span>
+          {minimalFixPath && (
+            <span className="flex items-center gap-1.5 text-[#136B33] font-bold">
+              <span className="inline-block w-3.5 border-t-2 border-dashed border-[#15803D]" />
+              MINIMAL-FIX FORK
+            </span>
+          )}
         </div>
       </div>
 
