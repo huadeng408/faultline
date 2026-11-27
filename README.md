@@ -1,9 +1,12 @@
 # FaultLine v3 · Hybrid AI Operational Stress-Test & CAD Audit Workbench
 
+[![Live Demo](https://img.shields.io/badge/Live_Demo-faultline--hybrid--ai.web.app-fa3600.svg)](https://faultline-hybrid-ai.web.app)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-2d3142.svg)](LICENSE)
 [![Firebase AI Logic](https://img.shields.io/badge/Firebase_AI_Logic-%40firebase%2Fai_3.1.0-bf4520.svg)](https://firebase.google.com/docs/ai-logic)
 [![Chrome Built-in AI](https://img.shields.io/badge/Chrome_Built--in_AI-Gemini_Nano_4-2e5aa8.svg)](https://developer.chrome.com/docs/ai/built-in)
 [![PWA + MV3 Side-Panel](https://img.shields.io/badge/Form_Factor-Offline_PWA_%2B_Chrome_MV3-4f5d75.svg)](#chrome-mv3-side-panel-extension)
+
+> **Live Interactive Workbench (PWA)**: **[https://faultline-hybrid-ai.web.app](https://faultline-hybrid-ai.web.app)** · **Chrome MV3 Side-Panel Release**: **[v3.6.0](https://github.com/huadeng408/faultline/releases/tag/v3.6.0)**
 
 **FaultLine v3** is a privacy-locked operational stress-testing workbench built on the **Firebase AI Logic Hybrid SDK (`firebase@13.4.0` / `@firebase/ai@3.1.0`)** and **Chrome Built-in AI (Gemini Nano 4)** for `#BuildHybridAI 2026`.
 
@@ -64,7 +67,7 @@ npm run build:ext
 
 ### Chrome MV3 Side-Panel Extension
 
-1. Download `faultline-v3-chrome-mv3-extension.zip` from [GitHub Releases](../../releases) (or build locally via `npm run build:ext` -> `dist-extension/`).
+1. Download `faultline-v3-chrome-mv3-extension.zip` from [GitHub Releases](https://github.com/huadeng408/faultline/releases) (or build locally via `npm run build:ext` -> `dist-extension/`).
 2. Open `chrome://extensions`, enable **Developer mode**, and click **Load unpacked** selecting `dist-extension/`.
 3. Highlight any operational runbook or contract text on any webpage, right-click **"Stress-Test Selection in FaultLine v3"**, and audit margins directly in the Chrome Side-Panel.
 

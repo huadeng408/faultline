@@ -1826,6 +1826,10 @@ const PLAIN_NER_JSON_SCHEMA = {
   },
 };
 
+const DEFAULT_FAST_CLOUD_MODEL = 'gemini-3.5-flash-lite';
+const DEFAULT_MC_PRIMARY_MODEL = 'gemini-3.8-flash';
+const DEFAULT_MC_FALLBACK_MODEL = 'gemini-3.5-flash-lite';
+
 /**
  * Genuine multi-instance Firebase AI Logic Hybrid SDK runtime (@firebase/ai 3.1.0)
  * + Chrome 158 direct Prompt API (`self.LanguageModel`) local hardware bridge.
@@ -1842,12 +1846,15 @@ export class FaultLineHybridBridge {
   private cloudMonteCarloPrimary: GenerativeModel | null = null;
   private cloudMonteCarloFallback: GenerativeModel | null = null;
   private inFlightMonteCarlo: Promise<CloudMonteCarloRawOutput> | null = null;
+  private mcPrimaryModel = DEFAULT_MC_PRIMARY_MODEL;
+  private mcFallbackModel = DEFAULT_MC_FALLBACK_MODEL;
+  private appCheckInitialized = false;
 
   public readonly status: LiveHybridStatus = {
     sdkVersion: 'firebase@13.4.0 / @firebase/ai@3.1.0',
     activeMode: InferenceMode.PREFER_ON_DEVICE,
-    cloudModel: 'gemini-3.5-flash-lite',
-    deepModel: 'gemini-3.8-flash',
+    cloudModel: DEFAULT_FAST_CLOUD_MODEL,
+    deepModel: DEFAULT_MC_PRIMARY_MODEL,
     deviceReady: false,
     visionReady: false,
     lastInferenceSource: 'deterministic',
@@ -1859,11 +1866,17 @@ export class FaultLineHybridBridge {
   public configure(firebaseConfig: FirebaseOptions, recaptchaSiteKey?: string): void {
     if (!firebaseConfig.apiKey || !firebaseConfig.projectId) return;
     const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-    if (recaptchaSiteKey && typeof window !== 'undefined') {
+    const protocol = typeof window !== 'undefined' ? window.location?.protocol : '';
+    if (
+      recaptchaSiteKey &&
+      !this.appCheckInitialized &&
+      (protocol === 'https:' || protocol === 'http:')
+    ) {
       initializeAppCheck(app, {
         provider: new ReCaptchaEnterpriseProvider(recaptchaSiteKey),
         isTokenAutoRefreshEnabled: true,
       });
+      this.appCheckInitialized = true;
     }
 
     const ai = getAI(app, { backend: new GoogleAIBackend() });
@@ -2006,7 +2019,7 @@ export class FaultLineHybridBridge {
       },
     });
 
-    this.rebuildCloudModels(this.status.deepModel, this.status.cloudModel);
+    this.rebuildCloudModels(this.mcPrimaryModel, this.mcFallbackModel);
 
     // Optional Remote Config dynamic model override (non-blocking)
     if (typeof window !== 'undefined') {
@@ -2014,15 +2027,18 @@ export class FaultLineHybridBridge {
         const rc = getRemoteConfig(app);
         rc.settings.minimumFetchIntervalMillis = 3600_000;
         rc.defaultConfig = {
-          faultline_mc_primary_model: 'gemini-3.8-flash',
-          faultline_mc_fallback_model: 'gemini-3.5-flash-lite',
+          faultline_mc_primary_model: DEFAULT_MC_PRIMARY_MODEL,
+          faultline_mc_fallback_model: DEFAULT_MC_FALLBACK_MODEL,
         };
         void fetchAndActivate(rc)
           .then(() => {
-            const pModel = getValue(rc, 'faultline_mc_primary_model').asString() || 'gemini-3.8-flash';
-            const fModel = getValue(rc, 'faultline_mc_fallback_model').asString() || 'gemini-3.5-flash-lite';
+            const pModel =
+              getValue(rc, 'faultline_mc_primary_model').asString() || DEFAULT_MC_PRIMARY_MODEL;
+            const fModel =
+              getValue(rc, 'faultline_mc_fallback_model').asString() || DEFAULT_MC_FALLBACK_MODEL;
+            this.mcPrimaryModel = pModel;
+            this.mcFallbackModel = fModel;
             this.status.deepModel = pModel;
-            this.status.cloudModel = fModel;
             this.rebuildCloudModels(pModel, fModel);
           })
           .catch(() => {
@@ -2595,7 +2611,7 @@ export class FaultLineHybridBridge {
         );
       }
 
-      let modelUsed = this.status.deepModel;
+      let modelUsed = this.mcPrimaryModel;
       let result;
       try {
         result = await this.cloudMonteCarloPrimary.generateContent(cloudPrompt);
@@ -2603,7 +2619,7 @@ export class FaultLineHybridBridge {
         const status = Number((err as { customErrorData?: { status?: number } })?.customErrorData?.status ?? 0);
         const msg = String((err as Error)?.message ?? '');
         if ([404, 429, 500, 503].includes(status) || /404|429|500|503|not found|quota/i.test(msg)) {
-          modelUsed = this.status.cloudModel;
+          modelUsed = this.mcFallbackModel;
           result = await this.cloudMonteCarloFallback.generateContent(cloudPrompt);
         } else {
           throw err;

@@ -80,7 +80,7 @@ export function encodePocketUrl(
   origin: string,
   state: PocketSurvivalState & { customScenario?: ScenarioDefinition },
 ): string {
-  const cleanOrigin = origin.replace(/\/+$/g, '') || 'https://faultline-v3.web.app';
+  const cleanOrigin = origin.replace(/\/+$/g, '') || 'https://faultline-hybrid-ai.web.app';
   const isBuiltin = state.scenarioId in BUILTIN_SHORT_MAP;
   const sur = state.surrogateSummary
     ? [state.surrogateSummary.p10Margin, state.surrogateSummary.p10Knots, state.surrogateSummary.p90Knots]
@@ -148,7 +148,7 @@ export function decodePocketUrl(urlOrToken: string): PocketSurvivalState | null 
   try {
     let token = urlOrToken.trim();
     if (token.includes('pocket=')) {
-      const parsedUrl = new URL(token, 'https://faultline-v3.web.app');
+      const parsedUrl = new URL(token, 'https://faultline-hybrid-ai.web.app');
       token = parsedUrl.searchParams.get('pocket') ?? '';
     }
     if (!token) return null;

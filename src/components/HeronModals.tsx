@@ -291,7 +291,7 @@ export const HeronOfflineQrModal: React.FC<QrModalProps> = ({
     const origin =
       typeof window !== 'undefined' && window.location.origin.startsWith('http')
         ? window.location.origin
-        : 'https://faultline-v3.web.app';
+        : 'https://faultline-hybrid-ai.web.app';
     const encodedUrl = encodePocketUrl(origin, {
       scenarioId: scenario.id,
       paramValues,
