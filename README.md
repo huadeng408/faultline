@@ -1,8 +1,25 @@
 # FaultLine v3 · Hybrid AI Operational Stress-Test & CAD Audit Workbench
 
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-2d3142.svg)](LICENSE)
+[![Firebase AI Logic](https://img.shields.io/badge/Firebase_AI_Logic-%40firebase%2Fai_3.1.0-bf4520.svg)](https://firebase.google.com/docs/ai-logic)
+[![Chrome Built-in AI](https://img.shields.io/badge/Chrome_Built--in_AI-Gemini_Nano_4-2e5aa8.svg)](https://developer.chrome.com/docs/ai/built-in)
+[![PWA + MV3 Side-Panel](https://img.shields.io/badge/Form_Factor-Offline_PWA_%2B_Chrome_MV3-4f5d75.svg)](#chrome-mv3-side-panel-extension)
+
 **FaultLine v3** is a privacy-locked operational stress-testing workbench built on the **Firebase AI Logic Hybrid SDK (`firebase@13.4.0` / `@firebase/ai@3.1.0`)** and **Chrome Built-in AI (Gemini Nano 4)** for `#BuildHybridAI 2026`.
 
 It bridges unstructured human emergency plans and hardware rating-plate photos with verified stochastic conservation and queueing physics—without ever transmitting raw PII, credentials, or currency balances off-device.
+
+![FaultLine v3 Split-Brain & Buckingham-Pi Privacy Airlock Architecture](docs/faultline-hybrid-architecture.png)
+
+---
+
+## Live Workbench Highlights
+
+| Typhoon CPAP Holdover & 2,000-MC Fan | Buckingham-Π `100×` `SHA-256` Proof (`Q.E.D.`) |
+| :---: | :---: |
+| ![Workbench Overview](docs/screenshots/01-workbench-cpap-overview.png) | ![Buckingham-Pi Proof](docs/screenshots/03-buckingham-pi-100x-qed.png) |
+| **Pareto Minimal-Fix Prescription (`CODE COMPLIANT`)** | **On-Device Multimodal Plate Scan (`SECTION D—D′`)** |
+| ![Pareto Minimal-Fix](docs/screenshots/02-retry-storm-pareto-minfix.png) | ![Custom Nameplate Scan](docs/screenshots/04-custom-nameplate-section-d.png) |
 
 ---
 
@@ -44,6 +61,19 @@ npm test
 npm run build
 npm run build:ext
 ```
+
+### Chrome MV3 Side-Panel Extension
+
+1. Download `faultline-v3-chrome-mv3-extension.zip` from [GitHub Releases](../../releases) (or build locally via `npm run build:ext` -> `dist-extension/`).
+2. Open `chrome://extensions`, enable **Developer mode**, and click **Load unpacked** selecting `dist-extension/`.
+3. Highlight any operational runbook or contract text on any webpage, right-click **"Stress-Test Selection in FaultLine v3"**, and audit margins directly in the Chrome Side-Panel.
+
+### Optional On-Device Gemini Nano Flags (Chrome Desktop)
+
+FaultLine degrades gracefully to deterministic local physics and cloud/seed surrogates on any browser. To unlock live `ONLY_ON_DEVICE` hardware plate vision and zero-latency Nano NER in Chrome:
+- `chrome://flags/#optimization-guide-on-device-model` -> **Enabled BypassPerfRequirement**
+- `chrome://flags/#prompt-api-for-gemini-nano` -> **Enabled**
+- `chrome://flags/#prompt-api-for-gemini-nano-multimodal-input` -> **Enabled**
 
 ### Optional Live Cloud Firebase Configuration (Zero Committed Secrets)
 

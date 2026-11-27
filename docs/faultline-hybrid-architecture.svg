@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="faultline-arch-title faultline-arch-desc" id="faultline-hybrid-architecture-root">
+        <title id="faultline-arch-title">FaultLine v3 Hybrid AI and Buckingham-Pi Architecture</title>
+        <desc id="faultline-arch-desc">Secure paved road architecture showing on-device Gemini Nano 4 intake, Buckingham-Pi dimensionless normalization blocking raw PII egress, cloud 2,000-trial Monte Carlo execution, and 60fps local Pareto minimal-fix solving.</desc>
+        <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #faultline-hybrid-architecture-root { --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-soft:    #5a6580;
+      --color-accent:  #bf4520;
+      --color-link:    #2e5aa8;
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace; }
+      #faultline-hybrid-architecture-root { font-family: var(--font-sans); color: var(--color-ink); }
+      #faultline-hybrid-architecture-root .diagram-container { width: 100%; overflow-x: auto; }
+      @media print {
+#faultline-hybrid-architecture-root .diagram-container { overflow-x: visible; }
+}</style>
+          <marker id="faultline-hybrid-architecture-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+          </marker>
+          <marker id="faultline-hybrid-architecture-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#bf4520"/>
+          </marker>
+          <marker id="faultline-hybrid-architecture-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/>
+          </marker>
+        </defs>
+
+        <!-- Clean paper background -->
+        <rect x="0" y="0" width="1280" height="720" fill="#f5f5f5"/>
+
+        <!-- 1. Trust Boundary Zones (drawn before arrows and nodes) -->
+        <!-- Zone 1: On-Device Edge -->
+        <rect x="40" y="64" width="496" height="536" rx="8" fill="#2d3142" stroke="#2d3142" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.12"/>
+        <rect x="60" y="68" width="228" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="174" y="77" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">CHROME EDGE · ON-DEVICE ZONE</text>
+
+        <!-- Zone 2: Buckingham-Pi Privacy Gate -->
+        <rect x="592" y="64" width="248" height="536" rx="8" fill="#2d3142" stroke="#bf4520" stroke-width="0.8" stroke-dasharray="4,4" fill-opacity="0.02" stroke-opacity="0.30"/>
+        <rect x="616" y="68" width="200" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="716" y="77" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">PRIVACY AIRLOCK BOUNDARY</text>
+
+        <!-- Zone 3: Firebase AI Cloud Sandbox -->
+        <rect x="904" y="64" width="336" height="536" rx="8" fill="#2d3142" stroke="#2d3142" stroke-width="0.8" fill-opacity="0.02" stroke-opacity="0.12"/>
+        <rect x="928" y="68" width="224" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="1040" y="77" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.14em">FIREBASE AI · CLOUD SANDBOX</text>
+
+        <!-- 2. Orthogonal Connectors (drawn before nodes) -->
+        <!-- C1: Intake -> Gemini Nano 4 -->
+        <line x1="256" y1="168" x2="320" y2="168" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#faultline-hybrid-architecture-arrow)"/>
+
+        <!-- C2: Gemini Nano 4 -> Buckingham-Pi Airlock (Permitted sanitized ingress) -->
+        <line x1="512" y1="168" x2="612" y2="168" stroke="#bf4520" stroke-width="1.2" marker-end="url(#faultline-hybrid-architecture-arrow-accent)"/>
+
+        <!-- C3: Buckingham-Pi Airlock -> Gemini Cloud Sandbox (Approved dimensionless egress) -->
+        <line x1="820" y1="168" x2="940" y2="168" stroke="#bf4520" stroke-width="1.4" marker-end="url(#faultline-hybrid-architecture-arrow-accent)"/>
+
+        <!-- C4: Forbidden raw PII bypass route stopping at Egress Firewall -->
+        <path d="M 208,200 V 320 Q 208,328 216,328 H 604" fill="none" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#faultline-hybrid-architecture-arrow)"/>
+        <line x1="608" y1="316" x2="608" y2="340" stroke="#bf4520" stroke-width="2"/>
+
+        <!-- C5: Intake -> 60fps ODE + Surrogate (Deterministic offline-first path) -->
+        <line x1="112" y1="200" x2="112" y2="456" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#faultline-hybrid-architecture-arrow)"/>
+
+        <!-- C6: Gemini Cloud Sandbox -> 60fps ODE + Surrogate (Async P10-P90 envelope return) -->
+        <path d="M 940,188 H 880 Q 872,188 872,196 V 556 Q 872,564 864,564 H 168 Q 160,564 160,556 V 520" fill="none" stroke="#2e5aa8" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#faultline-hybrid-architecture-arrow-link)"/>
+
+        <!-- C7: 60fps ODE + Surrogate -> Pareto Min-Fix Solver -->
+        <line x1="256" y1="488" x2="320" y2="488" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#faultline-hybrid-architecture-arrow)"/>
+
+        <!-- C8: Firebase Edge Guard -> Gemini Cloud Sandbox -->
+        <line x1="1072" y1="296" x2="1072" y2="200" stroke="#2e5aa8" stroke-width="1.2" marker-end="url(#faultline-hybrid-architecture-arrow-link)"/>
+
+        <!-- 3. Connector Labels (opaque paper masks, >=8px gap from strokes, zero node overlap) -->
+        <rect x="268" y="148" width="40" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="288" y="157" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PARSE</text>
+
+        <rect x="524" y="148" width="76" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="562" y="157" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">SCRUB PII</text>
+
+        <rect x="844" y="148" width="76" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="882" y="157" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">PI RATIOS</text>
+
+        <rect x="356" y="308" width="112" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="412" y="317" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">RAW PII BLOCKED</text>
+
+        <rect x="120" y="320" width="76" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="158" y="329" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">LOCAL SPEC</text>
+
+        <rect x="468" y="544" width="96" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="516" y="553" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">P10-P90 FAN</text>
+
+        <rect x="264" y="468" width="48" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="288" y="477" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">MARGIN</text>
+
+        <rect x="1080" y="240" width="76" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="1118" y="249" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">APP CHECK</text>
+
+        <!-- 4. Nodes (8 total, 4px grid) -->
+        <!-- N1: Private Field Intake (input) -->
+        <rect x="64" y="136" width="192" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="64" y="136" width="192" height="64" rx="6" fill="#4f5d75" stroke="#5a6580" stroke-width="1" fill-opacity="0.10"/>
+        <rect x="72" y="144" width="36" height="12" rx="2" fill="none" stroke="#5a6580" stroke-width="0.8" stroke-opacity="0.40"/>
+        <text x="90" y="153" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">INPUT</text>
+        <text x="160" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Private Field Intake</text>
+        <text x="160" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">JPEG plate · prose</text>
+
+        <!-- N2: Gemini Nano 4 (backend) -->
+        <rect x="320" y="136" width="192" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="320" y="136" width="192" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="328" y="144" width="36" height="12" rx="2" fill="none" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.40"/>
+        <text x="346" y="153" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">NANO</text>
+        <text x="416" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Gemini Nano 4</text>
+        <text x="416" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ONLY_ON_DEVICE · NER</text>
+
+        <!-- N3: 60fps ODE + Surrogate (backend) -->
+        <rect x="64" y="456" width="192" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="64" y="456" width="192" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="72" y="464" width="32" height="12" rx="2" fill="none" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.40"/>
+        <text x="88" y="473" fill="#2d3142" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">ODE</text>
+        <text x="160" y="492" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">60fps ODE + Surrogate</text>
+        <text x="160" y="508" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">P10-P90 Taylor fan</text>
+
+        <!-- N4: Pareto Min-Fix Solver (store) -->
+        <rect x="320" y="456" width="192" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="320" y="456" width="192" height="64" rx="6" fill="#2d3142" stroke="#4f5d75" stroke-width="1" fill-opacity="0.05"/>
+        <rect x="328" y="464" width="32" height="12" rx="2" fill="none" stroke="#4f5d75" stroke-width="0.8" stroke-opacity="0.45"/>
+        <text x="344" y="473" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">FIX</text>
+        <text x="416" y="492" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Pareto Min-Fix Solver</text>
+        <text x="416" y="508" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Dekker-Brent · QR</text>
+
+        <!-- N5: Buckingham-Pi Airlock (FOCAL #1, accent) -->
+        <rect x="612" y="136" width="208" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="612" y="136" width="208" height="64" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1.2" fill-opacity="0.08"/>
+        <rect x="620" y="144" width="36" height="12" rx="2" fill="none" stroke="#bf4520" stroke-width="0.8" stroke-opacity="0.50"/>
+        <text x="638" y="153" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">GATE</text>
+        <text x="716" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Buckingham-Pi Airlock</text>
+        <text x="716" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">(B_cap, T_ref) · SHA-256</text>
+
+        <!-- N6: Egress Firewall (security dashed) -->
+        <rect x="612" y="296" width="208" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="612" y="296" width="208" height="64" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1" stroke-dasharray="4,4" fill-opacity="0.05" stroke-opacity="0.50"/>
+        <rect x="620" y="304" width="36" height="12" rx="2" fill="none" stroke="#bf4520" stroke-width="0.8" stroke-opacity="0.45"/>
+        <text x="638" y="313" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">DENY</text>
+        <text x="716" y="332" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Egress Firewall</text>
+        <text x="716" y="348" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">0-PII fail-closed gate</text>
+
+        <!-- N7: Gemini Cloud Sandbox (FOCAL #2, accent) -->
+        <rect x="940" y="136" width="264" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="940" y="136" width="264" height="64" rx="6" fill="#bf4520" stroke="#bf4520" stroke-width="1.2" fill-opacity="0.08"/>
+        <rect x="948" y="144" width="36" height="12" rx="2" fill="none" stroke="#bf4520" stroke-width="0.8" stroke-opacity="0.50"/>
+        <text x="966" y="153" fill="#bf4520" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EXEC</text>
+        <text x="1072" y="172" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Gemini Cloud Sandbox</text>
+        <text x="1072" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">ONLY_IN_CLOUD · 2,000 OU trials</text>
+
+        <!-- N8: Firebase Edge Guard (external) -->
+        <rect x="940" y="296" width="264" height="64" rx="6" fill="#f5f5f5"/>
+        <rect x="940" y="296" width="264" height="64" rx="6" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/>
+        <rect x="948" y="304" width="36" height="12" rx="2" fill="none" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.30"/>
+        <text x="966" y="313" fill="#5a6580" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.08em">EDGE</text>
+        <text x="1072" y="332" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Firebase Edge Guard</text>
+        <text x="1072" y="348" fill="#4f5d75" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">App Check · Hosting · Config</text>
+
+        <!-- 5. Horizontal Bottom Legend Strip (y=636..696) -->
+        <line x1="40" y1="636" x2="1240" y2="636" stroke="#2d3142" stroke-width="0.8" stroke-opacity="0.12"/>
+        <text x="40" y="652" fill="#4f5d75" font-size="8" font-family="'Geist Mono', monospace" letter-spacing="0.14em">LEGEND</text>
+
+        <rect x="40" y="668" width="16" height="12" rx="2" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+        <text x="64" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Focal hybrid gate / compute</text>
+
+        <rect x="240" y="668" width="16" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <text x="264" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">On-device runtime</text>
+
+        <rect x="400" y="668" width="16" height="12" rx="2" fill="#2d3142" stroke="#4f5d75" stroke-width="1" fill-opacity="0.05"/>
+        <text x="424" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Repair / state artifact</text>
+
+        <rect x="576" y="668" width="16" height="12" rx="2" fill="#bf4520" stroke="#bf4520" stroke-width="1" stroke-dasharray="4,4" fill-opacity="0.05" stroke-opacity="0.50"/>
+        <text x="600" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Fail-closed firewall</text>
+
+        <rect x="744" y="668" width="16" height="12" rx="2" fill="#4f5d75" stroke="#5a6580" stroke-width="1" fill-opacity="0.10"/>
+        <text x="768" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Private intake</text>
+
+        <rect x="880" y="668" width="16" height="12" rx="2" fill="#2d3142" stroke="#2d3142" stroke-width="1" fill-opacity="0.03" stroke-opacity="0.30"/>
+        <text x="904" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Managed Firebase edge</text>
+
+        <line x1="1056" y1="674" x2="1084" y2="674" stroke="#bf4520" stroke-width="1.4" marker-end="url(#faultline-hybrid-architecture-arrow-accent)"/>
+        <text x="1092" y="677" fill="#4f5d75" font-size="9" font-family="'Geist', sans-serif">Dimensionless Pi flow</text>
+      </svg>
